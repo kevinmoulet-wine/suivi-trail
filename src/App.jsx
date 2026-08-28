@@ -7,7 +7,8 @@ import {
 } from "recharts";
 import {
   Upload, Mountain, Flag, Plus, Trash2, X, ChevronDown, ChevronUp,
-  TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen, Home as HomeIcon
+  TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen, Home as HomeIcon,
+  Database, User, Check
 } from "lucide-react";
 
 // ---------- Design tokens (placeholder — design pass later) ----------
@@ -281,6 +282,7 @@ export default function TrailTracker() {
   const [activities, setActivities] = useState([]);
   const [goals, setGoals] = useState([]);
   const [journal, setJournal] = useState({});
+  const [profile, setProfile] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("home");
   const [courseTab, setCourseTab] = useState("suivi");
@@ -296,6 +298,7 @@ export default function TrailTracker() {
       try { const a = await storage.get("activities"); if (a?.value) setActivities(JSON.parse(a.value)); } catch (e) {}
       try { const g = await storage.get("goals"); if (g?.value) setGoals(JSON.parse(g.value)); } catch (e) {}
       try { const j = await storage.get("journal"); if (j?.value) setJournal(JSON.parse(j.value)); } catch (e) {}
+      try { const p = await storage.get("profile"); if (p?.value) setProfile(JSON.parse(p.value)); } catch (e) {}
       setLoading(false);
     })();
   }, []);
@@ -303,6 +306,7 @@ export default function TrailTracker() {
   async function persistActivities(rows) { setActivities(rows); try { await storage.set("activities", JSON.stringify(rows)); } catch (e) { console.error(e); } }
   async function persistGoals(list) { setGoals(list); try { await storage.set("goals", JSON.stringify(list)); } catch (e) { console.error(e); } }
   async function persistJournal(obj) { setJournal(obj); try { await storage.set("journal", JSON.stringify(obj)); } catch (e) { console.error(e); } }
+  async function persistProfile(obj) { setProfile(obj); try { await storage.set("profile", JSON.stringify(obj)); } catch (e) { console.error(e); } }
 
   function handleParsed(rows) {
     const clean = rows.filter(r => r.date).map(r => ({
@@ -345,44 +349,42 @@ export default function TrailTracker() {
 
   if (loading) return <div style={{ background: C.bg, color: C.muted, minHeight: 400, display: "flex", alignItems: "center", justifyContent: "center" }}>Chargement…</div>;
 
-  const importAndJournal = (
-    <>
-      <Card style={{ marginBottom: 20 }}>
-        <SectionLabel icon={Upload}>Importer des données</SectionLabel>
-        <div className="flex gap-2 mb-3">
-          <button onClick={() => setImportMode("file")} style={btnStyle(importMode === "file")}>Fichier</button>
-          <button onClick={() => setImportMode("paste")} style={btnStyle(importMode === "paste")}>Coller le CSV</button>
+  const importSection = (
+    <Card style={{ marginBottom: 20 }}>
+      <SectionLabel icon={Upload}>Importer des données</SectionLabel>
+      <div className="flex gap-2 mb-3">
+        <button onClick={() => setImportMode("file")} style={btnStyle(importMode === "file")}>Fichier</button>
+        <button onClick={() => setImportMode("paste")} style={btnStyle(importMode === "paste")}>Coller le CSV</button>
+      </div>
+      {importMode === "file" ? (
+        <div>
+          <input ref={fileInput} type="file" accept=".csv" onChange={onFile} style={{ display: "none" }} />
+          <button onClick={() => fileInput.current?.click()} style={btnStyle(true)}>Choisir garmin_export.csv</button>
         </div>
-        {importMode === "file" ? (
-          <div>
-            <input ref={fileInput} type="file" accept=".csv" onChange={onFile} style={{ display: "none" }} />
-            <button onClick={() => fileInput.current?.click()} style={btnStyle(true)}>Choisir garmin_export.csv</button>
-          </div>
-        ) : (
-          <div>
-            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="Colle ici le contenu du CSV"
-              style={{ width: "100%", height: 90, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 12, ...mono }} />
-            <button onClick={onPasteImport} style={{ ...btnStyle(true), marginTop: 8 }}>Importer</button>
-          </div>
-        )}
-        {error && <p style={{ color: C.brick, fontSize: 12, marginTop: 8 }}>{error}</p>}
-        {activities.length > 0 && <p style={{ color: C.pine, fontSize: 12, marginTop: 10 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>}
-      </Card>
-
-      {needsJournal.length > 0 && (
-        <Card style={{ marginBottom: 20 }}>
-          <SectionLabel icon={BookOpen}>Journal — note ces sorties</SectionLabel>
-          <div style={{ display: "grid", gap: 8 }}>
-            {needsJournal.map((a, i) => (
-              <JournalPrompt key={i} activity={a} onSave={(score, note) => persistJournal({ ...journal, [a.date]: { score, note } })} />
-            ))}
-          </div>
-        </Card>
+      ) : (
+        <div>
+          <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="Colle ici le contenu du CSV"
+            style={{ width: "100%", height: 90, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 12, ...mono }} />
+          <button onClick={onPasteImport} style={{ ...btnStyle(true), marginTop: 8 }}>Importer</button>
+        </div>
       )}
-    </>
+      {error && <p style={{ color: C.brick, fontSize: 12, marginTop: 8 }}>{error}</p>}
+      {activities.length > 0 && <p style={{ color: C.pine, fontSize: 12, marginTop: 10 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>}
+    </Card>
   );
 
-  const currentGoal = view !== "home" && view !== "add" ? goals.find(g => g.id === view) : null;
+  const journalSection = needsJournal.length > 0 && (
+    <Card style={{ marginBottom: 20 }}>
+      <SectionLabel icon={BookOpen}>Journal — note ces sorties</SectionLabel>
+      <div style={{ display: "grid", gap: 8 }}>
+        {needsJournal.map((a, i) => (
+          <JournalPrompt key={i} activity={a} onSave={(score, note) => persistJournal({ ...journal, [a.date]: { score, note } })} />
+        ))}
+      </div>
+    </Card>
+  );
+
+  const currentGoal = ["home", "add", "data"].includes(view) ? null : goals.find(g => g.id === view);
 
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
@@ -393,6 +395,7 @@ export default function TrailTracker() {
         <h1 style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>Objectifs & préparation</h1>
         <div className="flex gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
           <button onClick={() => setView("home")} style={btnStyle(view === "home")} className="flex items-center gap-1"><HomeIcon size={13} /> Home</button>
+          <button onClick={() => setView("data")} style={btnStyle(view === "data")} className="flex items-center gap-1"><Database size={13} /> Mes données</button>
           {goals.map(g => (
             <button key={g.id} onClick={() => { setView(g.id); setCourseTab("suivi"); }} style={btnStyle(view === g.id)} className="flex items-center gap-1">
               <Flag size={13} /> {g.nom}
@@ -407,8 +410,16 @@ export default function TrailTracker() {
           <>
             <CourseOverviewList goals={goals} scores={scores} onSelect={id => { setView(id); setCourseTab("suivi"); }} />
             <MonthCalendar goals={goals} />
-            <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} />
-            {importAndJournal}
+            <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} journal={journal}
+              onSaveNote={(date, score, note) => persistJournal({ ...journal, [date]: { score, note } })} />
+            {journalSection}
+          </>
+        )}
+
+        {view === "data" && (
+          <>
+            <PersonalDataForm profile={profile} onUpdate={persistProfile} />
+            {importSection}
           </>
         )}
 
@@ -739,7 +750,31 @@ function MonthCalendar({ goals }) {
 }
 
 // ---------- Calendrier de la semaine en cours — séances de toutes les courses, taguées par course ----------
-function WeekCalendar({ goals, plans, todayIso }) {
+function SessionNote({ entry, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [score, setScore] = useState(entry?.score || "");
+  const [note, setNote] = useState(entry?.note || "");
+  if (!editing) {
+    return (
+      <button onClick={() => setEditing(true)} className="flex items-center gap-1"
+        style={{ background: "none", border: "none", color: entry ? C.gold : C.muted, cursor: "pointer", fontSize: 11, marginLeft: "auto", flexShrink: 0, padding: 0 }}>
+        <BookOpen size={12} /> {entry ? `${entry.score}/10` : "Noter"}
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1" style={{ marginLeft: "auto", flexShrink: 0 }}>
+      <input type="number" min="1" max="10" value={score} onChange={e => setScore(e.target.value)} placeholder="/10"
+        style={{ width: 36, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", fontSize: 11 }} />
+      <input value={note} onChange={e => setNote(e.target.value)} placeholder="Ressenti"
+        style={{ width: 100, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", fontSize: 11 }} />
+      <button onClick={() => { if (score) { onSave(+score, note); setEditing(false); } }}
+        style={{ background: "none", border: "none", color: C.pine, cursor: "pointer", padding: 0 }}><Check size={14} /></button>
+    </div>
+  );
+}
+
+function WeekCalendar({ goals, plans, todayIso, journal, onSaveNote }) {
   if (!goals.length) return null;
   const weekStart = startOfWeekMonday(new Date());
   const days = DAY_ORDER.map((_, i) => isoDate(addDays(weekStart, i)));
@@ -775,6 +810,7 @@ function WeekCalendar({ goals, plans, todayIso }) {
                     {s.goal.nom}
                   </span>
                   <span>{s.type} · {s.estKm}km{s.estDplus ? ` · ${s.estDplus}m D+` : ""}{s.start ? ` · ${s.start}–${s.end}` : ""}</span>
+                  <SessionNote entry={journal[day.date]} onSave={(score, note) => onSaveNote(day.date, score, note)} />
                 </div>
               ))}
             </div>
@@ -1059,6 +1095,27 @@ function JournalPrompt({ activity, onSave }) {
         <button onClick={() => score && onSave(+score, note)} style={btnStyle(true)}>Noter</button>
       </div>
     </div>
+  );
+}
+
+function PersonalDataForm({ profile, onUpdate }) {
+  function setField(key) { return e => onUpdate({ ...profile, [key]: e.target.value }); }
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <SectionLabel icon={User}>Données personnelles</SectionLabel>
+      <div style={{ display: "grid", gap: 8 }}>
+        <input defaultValue={profile.prenom || ""} onBlur={setField("prenom")} placeholder="Prénom" style={inputStyle()} />
+        <div className="flex gap-2">
+          <input type="date" defaultValue={profile.naissance || ""} onBlur={setField("naissance")} style={inputStyle()} />
+          <input type="number" defaultValue={profile.poids || ""} onBlur={setField("poids")} placeholder="Poids (kg)" style={inputStyle()} />
+          <input type="number" defaultValue={profile.taille || ""} onBlur={setField("taille")} placeholder="Taille (cm)" style={inputStyle()} />
+        </div>
+        <div className="flex gap-2">
+          <input type="number" defaultValue={profile.fcRepos || ""} onBlur={setField("fcRepos")} placeholder="FC repos (bpm)" style={inputStyle()} />
+          <input type="number" defaultValue={profile.fcMax || ""} onBlur={setField("fcMax")} placeholder="FC max (bpm)" style={inputStyle()} />
+        </div>
+      </div>
+    </Card>
   );
 }
 
