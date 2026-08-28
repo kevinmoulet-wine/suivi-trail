@@ -8,7 +8,7 @@ import {
 import {
   Upload, Mountain, Flag, Plus, Trash2, X, ChevronDown, ChevronUp,
   TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen, Home as HomeIcon,
-  Database, User
+  Database, User, Check
 } from "lucide-react";
 
 // ---------- Design tokens (placeholder — design pass later) ----------
@@ -410,7 +410,8 @@ export default function TrailTracker() {
           <>
             <CourseOverviewList goals={goals} scores={scores} onSelect={id => { setView(id); setCourseTab("suivi"); }} />
             <MonthCalendar goals={goals} />
-            <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} />
+            <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} journal={journal}
+              onSaveNote={(date, score, note) => persistJournal({ ...journal, [date]: { score, note } })} />
             {journalSection}
           </>
         )}
@@ -749,7 +750,31 @@ function MonthCalendar({ goals }) {
 }
 
 // ---------- Calendrier de la semaine en cours — séances de toutes les courses, taguées par course ----------
-function WeekCalendar({ goals, plans, todayIso }) {
+function SessionNote({ entry, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [score, setScore] = useState(entry?.score || "");
+  const [note, setNote] = useState(entry?.note || "");
+  if (!editing) {
+    return (
+      <button onClick={() => setEditing(true)} className="flex items-center gap-1"
+        style={{ background: "none", border: "none", color: entry ? C.gold : C.muted, cursor: "pointer", fontSize: 11, marginLeft: "auto", flexShrink: 0, padding: 0 }}>
+        <BookOpen size={12} /> {entry ? `${entry.score}/10` : "Noter"}
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1" style={{ marginLeft: "auto", flexShrink: 0 }}>
+      <input type="number" min="1" max="10" value={score} onChange={e => setScore(e.target.value)} placeholder="/10"
+        style={{ width: 36, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", fontSize: 11 }} />
+      <input value={note} onChange={e => setNote(e.target.value)} placeholder="Ressenti"
+        style={{ width: 100, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", fontSize: 11 }} />
+      <button onClick={() => { if (score) { onSave(+score, note); setEditing(false); } }}
+        style={{ background: "none", border: "none", color: C.pine, cursor: "pointer", padding: 0 }}><Check size={14} /></button>
+    </div>
+  );
+}
+
+function WeekCalendar({ goals, plans, todayIso, journal, onSaveNote }) {
   if (!goals.length) return null;
   const weekStart = startOfWeekMonday(new Date());
   const days = DAY_ORDER.map((_, i) => isoDate(addDays(weekStart, i)));
@@ -785,6 +810,7 @@ function WeekCalendar({ goals, plans, todayIso }) {
                     {s.goal.nom}
                   </span>
                   <span>{s.type} · {s.estKm}km{s.estDplus ? ` · ${s.estDplus}m D+` : ""}{s.start ? ` · ${s.start}–${s.end}` : ""}</span>
+                  <SessionNote entry={journal[day.date]} onSave={(score, note) => onSaveNote(day.date, score, note)} />
                 </div>
               ))}
             </div>
