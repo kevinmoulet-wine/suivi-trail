@@ -278,8 +278,7 @@ export default function TrailTracker() {
   const [journal, setJournal] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("home");
-  const [expandedGoal, setExpandedGoal] = useState(null);
-  const [showGoalForm, setShowGoalForm] = useState(false);
+  const [courseTab, setCourseTab] = useState("suivi");
   const [importMode, setImportMode] = useState("file");
   const [pasteText, setPasteText] = useState("");
   const [error, setError] = useState("");
@@ -318,7 +317,7 @@ export default function TrailTracker() {
   function onFile(e) { const f = e.target.files?.[0]; if (!f) return; Papa.parse(f, { header: true, skipEmptyLines: true, complete: r => handleParsed(r.data) }); }
   function onPasteImport() { if (!pasteText.trim()) { setError("Colle d'abord le contenu du CSV."); return; } Papa.parse(pasteText, { header: true, skipEmptyLines: true, complete: r => handleParsed(r.data) }); }
 
-  function addGoal(g) { const withId = { ...g, id: Date.now().toString(), program: { sessions: [], notes: "" }, nominalTargets: [] }; persistGoals([...goals, withId]); setShowGoalForm(false); }
+  function addGoal(g) { const withId = { ...g, id: Date.now().toString(), program: { sessions: [], notes: "" }, nominalTargets: [] }; persistGoals([...goals, withId]); setView(withId.id); setCourseTab("programme"); }
   function removeGoal(id) { persistGoals(goals.filter(g => g.id !== id)); }
   function updateGoal(id, updater) { persistGoals(goals.map(g => g.id === id ? updater(g) : g)); }
 
@@ -346,100 +345,6 @@ export default function TrailTracker() {
   }, [goals]);
   const nextPlan = nextGoal ? plans[nextGoal.id] : null;
   const nextScore = nextGoal ? scores[nextGoal.id] : null;
-
-  const currentWeek = useMemo(() => {
-    if (!nextPlan) return null;
-    return nextPlan.weeks.find(w => w.start <= todayIso && todayIso <= w.end) || null;
-  }, [nextPlan, todayIso]);
-
-  const currentWeekReal = useMemo(() => {
-    if (!currentWeek) return { km: 0, dplus: 0 };
-    const acts = activities.filter(a => a.date >= currentWeek.start && a.date <= currentWeek.end);
-    return {
-      km: +acts.reduce((s, a) => s + (a.distance_km || 0), 0).toFixed(1),
-      dplus: Math.round(acts.reduce((s, a) => s + (a.d_plus || 0), 0)),
-    };
-  }, [currentWeek, activities]);
-
-  const nextSession = useMemo(() => {
-    if (!nextPlan) return null;
-    const startIdx = currentWeek ? nextPlan.weeks.indexOf(currentWeek) : nextPlan.weeks.findIndex(w => w.start >= todayIso);
-    const searchWeeks = startIdx === -1 ? [] : nextPlan.weeks.slice(startIdx);
-    for (const w of searchWeeks) {
-      const candidate = w.sessions
-        .filter(s => !(s.type || "").includes("Repos"))
-        .filter(s => s.date >= todayIso)
-        .sort((a, b) => new Date(a.date) - new Date(b.date))[0];
-      if (candidate) return candidate;
-    }
-    return null;
-  }, [nextPlan, currentWeek, todayIso]);
-
-  // Dashboard 1 — cumul km réel vs cible (cible = plan.weeks[i].targetKm cumulé, la même cible totale
-  // ajustable qu'utilisent la Comparaison et le Plan de l'onglet Programme)
-  const cumulKmSeries = useMemo(() => {
-    if (!nextPlan) return [];
-    let cibleCum = 0, reelCum = 0;
-    return nextPlan.weeks.map(w => {
-      cibleCum += w.targetKm;
-      const started = w.start <= todayIso;
-      if (started) {
-        const acts = activities.filter(a => a.date >= w.start && a.date <= w.end);
-        reelCum += acts.reduce((s, a) => s + (a.distance_km || 0), 0);
-      }
-      return { date: w.end, cible: +cibleCum.toFixed(1), reel: started ? +reelCum.toFixed(1) : null };
-    });
-  }, [nextPlan, activities, todayIso]);
-
-  // Dashboard 2 — VO2max réelle vs prévisionnelle. La prévisionnelle suit la trajectoire linéaire
-  // start → target de la cible nominale vo2max, mais la portion passée est pondérée par l'adhérence
-  // réelle au programme (séances réalisées / séances prévues à ce jour) ; la portion future prolonge
-  // depuis ce point ajusté jusqu'à la cible à la date de course.
-  const vo2ProjectionSeries = useMemo(() => {
-    if (!nextGoal || !nextPlan) return { points: [], hasTarget: false };
-    const vo2Target = (nextGoal.nominalTargets || []).find(t => t.type === "vo2max");
-    const windowStart = nextPlan.windowStart;
-    const raceDate = nextGoal.date;
-    const realPoints = activities.filter(a => a.vo2max && a.date >= windowStart && a.date <= raceDate);
-    if (!vo2Target) {
-      return { points: realPoints.map(a => ({ date: a.date, reel: a.vo2max, previsionnel: null })), hasTarget: false };
-    }
-    const spanMs = new Date(raceDate) - new Date(windowStart) || 1;
-    const fractionOf = d => clamp01((new Date(d) - new Date(windowStart)) / spanMs);
-    const todayFraction = Math.min(clamp01(fractionOf(todayIso)), 0.999);
-
-    const allSessions = nextPlan.weeks.flatMap(w => w.sessions);
-    const pastSessions = allSessions.filter(s => s.date <= todayIso && !(s.type || "").includes("Repos"));
-    const realizedCount = pastSessions.filter(s => findActivity(s.date, activities)).length;
-    const adherence = pastSessions.length ? realizedCount / pastSessions.length : 1;
-
-    const { start, target } = vo2Target;
-    function projectedValue(fraction) {
-      if (fraction <= todayFraction) return +(start + (target - start) * fraction * adherence).toFixed(1);
-      const todayVal = start + (target - start) * todayFraction * adherence;
-      return +(todayVal + (target - todayVal) * ((fraction - todayFraction) / (1 - todayFraction))).toFixed(1);
-    }
-
-    const dates = Array.from(new Set([...realPoints.map(a => a.date), ...nextPlan.weeks.map(w => w.end)])).sort();
-    const points = dates.map(d => ({
-      date: d,
-      reel: realPoints.find(a => a.date === d)?.vo2max ?? null,
-      previsionnel: projectedValue(fractionOf(d)),
-    }));
-    return { points, hasTarget: true, adherence };
-  }, [nextGoal, nextPlan, activities, todayIso]);
-
-  // Dashboard 3 — volume hebdo réalisé vs programme prévu (semaines déjà entamées uniquement)
-  const weeklyVsPlanSeries = useMemo(() => {
-    if (!nextPlan) return [];
-    return nextPlan.weeks
-      .filter(w => w.start <= todayIso)
-      .map(w => {
-        const acts = activities.filter(a => a.date >= w.start && a.date <= w.end);
-        const reel = +acts.reduce((s, a) => s + (a.distance_km || 0), 0).toFixed(1);
-        return { semaine: w.start, reel, prevu: w.targetKm };
-      });
-  }, [nextPlan, activities, todayIso]);
 
   if (loading) return <div style={{ background: C.bg, color: C.muted, minHeight: 400, display: "flex", alignItems: "center", justifyContent: "center" }}>Chargement…</div>;
 
@@ -480,8 +385,228 @@ export default function TrailTracker() {
     </>
   );
 
-  const dashboards = nextGoal && nextPlan && (
+  const currentGoal = view !== "home" && view !== "add" ? goals.find(g => g.id === view) : null;
+
+  return (
+    <div style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "24px 20px 18px" }}>
+        <div className="flex items-center gap-2" style={{ color: C.blaze }}>
+          <Mountain size={18} /><span style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", fontWeight: 700 }}>Carnet de trail</span>
+        </div>
+        <h1 style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>Objectifs & préparation</h1>
+        <div className="flex gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
+          <button onClick={() => setView("home")} style={btnStyle(view === "home")} className="flex items-center gap-1"><HomeIcon size={13} /> Home</button>
+          {goals.map(g => (
+            <button key={g.id} onClick={() => { setView(g.id); setCourseTab("suivi"); }} style={btnStyle(view === g.id)} className="flex items-center gap-1">
+              <Flag size={13} /> {g.nom}
+            </button>
+          ))}
+          <button onClick={() => setView("add")} style={btnStyle(view === "add")} title="Ajouter une course"><Plus size={13} /></button>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px" }}>
+        {view === "home" && (
+          <>
+            {nextGoal ? (
+              <CourseDashboards goal={nextGoal} plan={nextPlan} score={nextScore} activities={activities} today={today} todayIso={todayIso} />
+            ) : (
+              <Card style={{ marginBottom: 20 }}>
+                <p style={{ color: C.muted, fontSize: 13 }}>Aucune course à venir — ajoute-en une avec le bouton "+" ci-dessus.</p>
+              </Card>
+            )}
+
+            {goals.length > 1 && (
+              <Card style={{ marginBottom: 20 }}>
+                <SectionLabel icon={Target}>Vue globale</SectionLabel>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {goals.map(g => (
+                    <div key={g.id} className="flex items-center justify-between">
+                      <span style={{ fontSize: 13 }}>{g.nom}</span>
+                      <div className="flex items-center gap-2" style={{ width: "55%" }}>
+                        <ProgressBar pct={scores[g.id]?.global ?? 0} />
+                        <span style={{ ...mono, fontSize: 12, width: 32, textAlign: "right" }}>{scores[g.id]?.notStarted || scores[g.id]?.global == null ? "—" : `${scores[g.id].global}%`}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ color: C.muted, fontSize: 11, marginTop: 10 }}>
+                  Les courses marquées "étape vers" partagent leurs semaines de préparation avec l'objectif final — leur résultat nourrit le score de l'objectif suivant.
+                </p>
+              </Card>
+            )}
+
+            {importAndJournal}
+          </>
+        )}
+
+        {view === "add" && (
+          <GoalForm goals={goals} onCancel={() => setView("home")} onSave={addGoal} />
+        )}
+
+        {currentGoal && (
+          <>
+            <div className="flex gap-2 mb-4">
+              {[["suivi", "Suivi"], ["programme", "Programme"], ["nutrition", "Nutrition"]].map(([k, label]) => (
+                <button key={k} onClick={() => setCourseTab(k)} style={btnStyle(courseTab === k)}>{label}</button>
+              ))}
+            </div>
+
+            {courseTab === "suivi" && (
+              <CourseDashboards goal={currentGoal} plan={plans[currentGoal.id]} score={scores[currentGoal.id]} activities={activities} today={today} todayIso={todayIso} showTitle={false} />
+            )}
+
+            {courseTab === "programme" && (
+              <GoalDetail goal={currentGoal} goals={goals} plan={plans[currentGoal.id]} score={scores[currentGoal.id]} activities={activities}
+                onUpdate={updater => updateGoal(currentGoal.id, updater)} onRemove={() => { removeGoal(currentGoal.id); setView("home"); }} today={today} />
+            )}
+
+            {courseTab === "nutrition" && (
+              <Card>
+                <SectionLabel icon={Activity}>Nutrition</SectionLabel>
+                <p style={{ color: C.muted, fontSize: 13 }}>À venir — cette section sera développée prochainement (plan nutritionnel, ravitaillement course, etc.).</p>
+              </Card>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Course dashboards (résumé + 3 dashboards de suivi pour une course donnée) ----------
+function CourseDashboards({ goal, plan, score, activities, today, todayIso, showTitle = true }) {
+  const currentWeek = useMemo(() => {
+    if (!plan) return null;
+    return plan.weeks.find(w => w.start <= todayIso && todayIso <= w.end) || null;
+  }, [plan, todayIso]);
+
+  const currentWeekReal = useMemo(() => {
+    if (!currentWeek) return { km: 0, dplus: 0 };
+    const acts = activities.filter(a => a.date >= currentWeek.start && a.date <= currentWeek.end);
+    return {
+      km: +acts.reduce((s, a) => s + (a.distance_km || 0), 0).toFixed(1),
+      dplus: Math.round(acts.reduce((s, a) => s + (a.d_plus || 0), 0)),
+    };
+  }, [currentWeek, activities]);
+
+  const nextSession = useMemo(() => {
+    if (!plan) return null;
+    const startIdx = currentWeek ? plan.weeks.indexOf(currentWeek) : plan.weeks.findIndex(w => w.start >= todayIso);
+    const searchWeeks = startIdx === -1 ? [] : plan.weeks.slice(startIdx);
+    for (const w of searchWeeks) {
+      const candidate = w.sessions
+        .filter(s => !(s.type || "").includes("Repos"))
+        .filter(s => s.date >= todayIso)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))[0];
+      if (candidate) return candidate;
+    }
+    return null;
+  }, [plan, currentWeek, todayIso]);
+
+  // Dashboard 1 — cumul km réel vs cible (cible = plan.weeks[i].targetKm cumulé, la même cible totale
+  // ajustable qu'utilisent la Comparaison et le Plan de l'onglet Programme)
+  const cumulKmSeries = useMemo(() => {
+    if (!plan) return [];
+    let cibleCum = 0, reelCum = 0;
+    return plan.weeks.map(w => {
+      cibleCum += w.targetKm;
+      const started = w.start <= todayIso;
+      if (started) {
+        const acts = activities.filter(a => a.date >= w.start && a.date <= w.end);
+        reelCum += acts.reduce((s, a) => s + (a.distance_km || 0), 0);
+      }
+      return { date: w.end, cible: +cibleCum.toFixed(1), reel: started ? +reelCum.toFixed(1) : null };
+    });
+  }, [plan, activities, todayIso]);
+
+  // Dashboard 2 — VO2max réelle vs prévisionnelle. La prévisionnelle suit la trajectoire linéaire
+  // start → target de la cible nominale vo2max, mais la portion passée est pondérée par l'adhérence
+  // réelle au programme (séances réalisées / séances prévues à ce jour) ; la portion future prolonge
+  // depuis ce point ajusté jusqu'à la cible à la date de course.
+  const vo2ProjectionSeries = useMemo(() => {
+    if (!goal || !plan) return { points: [], hasTarget: false };
+    const vo2Target = (goal.nominalTargets || []).find(t => t.type === "vo2max");
+    const windowStart = plan.windowStart;
+    const raceDate = goal.date;
+    const realPoints = activities.filter(a => a.vo2max && a.date >= windowStart && a.date <= raceDate);
+    if (!vo2Target) {
+      return { points: realPoints.map(a => ({ date: a.date, reel: a.vo2max, previsionnel: null })), hasTarget: false };
+    }
+    const spanMs = new Date(raceDate) - new Date(windowStart) || 1;
+    const fractionOf = d => clamp01((new Date(d) - new Date(windowStart)) / spanMs);
+    const todayFraction = Math.min(clamp01(fractionOf(todayIso)), 0.999);
+
+    const allSessions = plan.weeks.flatMap(w => w.sessions);
+    const pastSessions = allSessions.filter(s => s.date <= todayIso && !(s.type || "").includes("Repos"));
+    const realizedCount = pastSessions.filter(s => findActivity(s.date, activities)).length;
+    const adherence = pastSessions.length ? realizedCount / pastSessions.length : 1;
+
+    const { start, target } = vo2Target;
+    function projectedValue(fraction) {
+      if (fraction <= todayFraction) return +(start + (target - start) * fraction * adherence).toFixed(1);
+      const todayVal = start + (target - start) * todayFraction * adherence;
+      return +(todayVal + (target - todayVal) * ((fraction - todayFraction) / (1 - todayFraction))).toFixed(1);
+    }
+
+    const dates = Array.from(new Set([...realPoints.map(a => a.date), ...plan.weeks.map(w => w.end)])).sort();
+    const points = dates.map(d => ({
+      date: d,
+      reel: realPoints.find(a => a.date === d)?.vo2max ?? null,
+      previsionnel: projectedValue(fractionOf(d)),
+    }));
+    return { points, hasTarget: true, adherence };
+  }, [goal, plan, activities, todayIso]);
+
+  // Dashboard 3 — volume hebdo réalisé vs programme prévu (semaines déjà entamées uniquement)
+  const weeklyVsPlanSeries = useMemo(() => {
+    if (!plan) return [];
+    return plan.weeks
+      .filter(w => w.start <= todayIso)
+      .map(w => {
+        const acts = activities.filter(a => a.date >= w.start && a.date <= w.end);
+        const reel = +acts.reduce((s, a) => s + (a.distance_km || 0), 0).toFixed(1);
+        return { semaine: w.start, reel, prevu: w.targetKm };
+      });
+  }, [plan, activities, todayIso]);
+
+  if (!goal || !plan) return null;
+
+  return (
     <>
+      <Card style={{ marginBottom: 20 }}>
+        {showTitle && <SectionLabel icon={Flag}>{goal.nom}</SectionLabel>}
+        <div className="flex items-center justify-between">
+          <div style={{ ...mono, fontSize: 32, fontWeight: 800, color: C.gold }}>J-{daysUntil(goal.date)}</div>
+          <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: C.text }}>
+            {score?.notStarted || score?.global == null ? "—" : `${score.global}%`}
+          </div>
+        </div>
+        {!(score?.notStarted || score?.global == null) && <ProgressBar pct={score.global} />}
+        <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
+          <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+            <span>Cette semaine</span>
+          </div>
+          {currentWeek ? (
+            <p style={{ ...mono, fontSize: 15, color: C.text }}>
+              {currentWeekReal.km}/{currentWeek.targetKm}km · {currentWeekReal.dplus}/{currentWeek.targetDplus}m D+
+            </p>
+          ) : (
+            <p style={{ color: C.muted, fontSize: 12 }}>Hors fenêtre de préparation.</p>
+          )}
+        </div>
+        <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Prochaine séance</div>
+          {nextSession ? (
+            <p style={{ fontSize: 13, color: C.text }}>
+              {fmtDateFR(nextSession.date)} · {nextSession.type} · {nextSession.estKm}km{nextSession.estDplus ? ` · ${nextSession.estDplus}m D+` : ""}
+            </p>
+          ) : (
+            <p style={{ color: C.muted, fontSize: 12 }}>Aucune séance à venir dans le programme.</p>
+          )}
+        </div>
+      </Card>
+
       {cumulKmSeries.length > 1 && (
         <Card style={{ marginBottom: 16 }}>
           <SectionLabel icon={Target}>Cumul km — réel vs cible</SectionLabel>
@@ -517,7 +642,7 @@ export default function TrailTracker() {
           </ResponsiveContainer>
           {!vo2ProjectionSeries.hasTarget && (
             <p style={{ color: C.muted, fontSize: 11, marginTop: 8 }}>
-              Ajoute une cible VO2max (Programme → Cibles nominales) pour voir la prévisionnelle.
+              Ajoute une cible VO2max (onglet Programme → Cibles nominales) pour voir la prévisionnelle.
             </p>
           )}
         </Card>
@@ -540,143 +665,6 @@ export default function TrailTracker() {
         </Card>
       )}
     </>
-  );
-
-  return (
-    <div style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
-      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "24px 20px 18px" }}>
-        <div className="flex items-center gap-2" style={{ color: C.blaze }}>
-          <Mountain size={18} /><span style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", fontWeight: 700 }}>Carnet de trail</span>
-        </div>
-        <h1 style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>Objectifs & préparation</h1>
-        <div className="flex gap-2" style={{ marginTop: 14 }}>
-          <button onClick={() => setView("home")} style={btnStyle(view === "home")} className="flex items-center gap-1"><HomeIcon size={13} /> Home</button>
-          <button onClick={() => setView("programme")} style={btnStyle(view === "programme")} className="flex items-center gap-1"><Flag size={13} /> Programme</button>
-        </div>
-      </div>
-
-      <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px" }}>
-        {view === "home" ? (
-          <>
-            {nextGoal ? (
-              <Card style={{ marginBottom: 20 }}>
-                <SectionLabel icon={Flag}>{nextGoal.nom}</SectionLabel>
-                <div className="flex items-center justify-between">
-                  <div style={{ ...mono, fontSize: 32, fontWeight: 800, color: C.gold }}>J-{daysUntil(nextGoal.date)}</div>
-                  <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: C.text }}>
-                    {nextScore?.notStarted || nextScore?.global == null ? "—" : `${nextScore.global}%`}
-                  </div>
-                </div>
-                {!(nextScore?.notStarted || nextScore?.global == null) && <ProgressBar pct={nextScore.global} />}
-                <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
-                  <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
-                    <span>Cette semaine</span>
-                  </div>
-                  {currentWeek ? (
-                    <p style={{ ...mono, fontSize: 15, color: C.text }}>
-                      {currentWeekReal.km}/{currentWeek.targetKm}km · {currentWeekReal.dplus}/{currentWeek.targetDplus}m D+
-                    </p>
-                  ) : (
-                    <p style={{ color: C.muted, fontSize: 12 }}>Hors fenêtre de préparation.</p>
-                  )}
-                </div>
-                <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Prochaine séance</div>
-                  {nextSession ? (
-                    <p style={{ fontSize: 13, color: C.text }}>
-                      {fmtDateFR(nextSession.date)} · {nextSession.type} · {nextSession.estKm}km{nextSession.estDplus ? ` · ${nextSession.estDplus}m D+` : ""}
-                    </p>
-                  ) : (
-                    <p style={{ color: C.muted, fontSize: 12 }}>Aucune séance à venir dans le programme.</p>
-                  )}
-                </div>
-              </Card>
-            ) : (
-              <Card style={{ marginBottom: 20 }}>
-                <p style={{ color: C.muted, fontSize: 13 }}>Aucune course à venir — ajoute un objectif dans l'onglet Programme.</p>
-              </Card>
-            )}
-            {importAndJournal}
-            {dashboards}
-          </>
-        ) : (
-          <>
-            <SectionLabel icon={Flag}>Objectifs</SectionLabel>
-            <div style={{ display: "grid", gap: 10, marginBottom: 20 }}>
-              {goals.map(g => {
-                const d = daysUntil(g.date);
-                const score = scores[g.id];
-                const isExpanded = expandedGoal === g.id;
-                const childOf = goals.find(o => o.id === g.isPrepFor);
-                return (
-                  <Card key={g.id}>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: 15 }}>{g.nom}</div>
-                        <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>
-                          {fmtDateFR(g.date)} · {g.distance} km · {g.dplus || "—"} m D+
-                          {childOf && <> · étape vers {childOf.nom}</>}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div style={{ ...mono, fontSize: 20, fontWeight: 700, color: d < 0 ? C.muted : C.gold }}>{d < 0 ? "passée" : `J-${d}`}</div>
-                        <button onClick={() => setExpandedGoal(isExpanded ? null : g.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
-                          {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ marginTop: 10 }}>
-                      <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
-                        <span>Atteinte de l'objectif</span>
-                        <span style={{ ...mono, color: C.text }}>{score?.notStarted || score?.global == null ? "—" : `${score.global}%`}</span>
-                      </div>
-                      {score?.notStarted || score?.global == null
-                        ? <p style={{ color: C.muted, fontSize: 11 }}>Renseigne tes disponibilités pour activer le suivi.</p>
-                        : <>
-                            <ProgressBar pct={score.global} />
-                            <p style={{ color: C.muted, fontSize: 11, marginTop: 5, ...mono }}>
-                              Cumul : {score.cumulative.realKm}/{score.cumulative.idealKm}km · {score.cumulative.realDplus}/{score.cumulative.idealDplus}m D+
-                            </p>
-                          </>}
-                    </div>
-                    {isExpanded && (
-                      <GoalDetail goal={g} goals={goals} plan={plans[g.id]} score={score} activities={activities}
-                        onUpdate={updater => updateGoal(g.id, updater)} onRemove={() => { removeGoal(g.id); setExpandedGoal(null); }} today={today} />
-                    )}
-                  </Card>
-                );
-              })}
-              {!showGoalForm ? (
-                <button onClick={() => setShowGoalForm(true)} className="flex items-center gap-2 justify-center"
-                  style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12, color: C.muted, background: "none", cursor: "pointer", fontSize: 13 }}>
-                  <Plus size={14} /> Ajouter une course
-                </button>
-              ) : <GoalForm goals={goals} onCancel={() => setShowGoalForm(false)} onSave={addGoal} />}
-            </div>
-
-            {goals.length > 1 && (
-              <Card style={{ marginBottom: 20 }}>
-                <SectionLabel icon={Target}>Vue globale</SectionLabel>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {goals.map(g => (
-                    <div key={g.id} className="flex items-center justify-between">
-                      <span style={{ fontSize: 13 }}>{g.nom}</span>
-                      <div className="flex items-center gap-2" style={{ width: "55%" }}>
-                        <ProgressBar pct={scores[g.id]?.global ?? 0} />
-                        <span style={{ ...mono, fontSize: 12, width: 32, textAlign: "right" }}>{scores[g.id]?.notStarted || scores[g.id]?.global == null ? "—" : `${scores[g.id].global}%`}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p style={{ color: C.muted, fontSize: 11, marginTop: 10 }}>
-                  Les courses marquées "étape vers" partagent leurs semaines de préparation avec l'objectif final — leur résultat nourrit le score de l'objectif suivant.
-                </p>
-              </Card>
-            )}
-          </>
-        )}
-      </div>
-    </div>
   );
 }
 
