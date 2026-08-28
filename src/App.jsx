@@ -339,17 +339,6 @@ export default function TrailTracker() {
     return activities.filter(a => new Date(a.date).getTime() >= cutoff && !journal[a.date]);
   }, [activities, journal]);
 
-  const vo2Series = useMemo(() => activities.filter(a => a.vo2max).map(a => ({ date: a.date, vo2max: a.vo2max })), [activities]);
-  const weekly = useMemo(() => {
-    const map = {};
-    activities.forEach(a => {
-      const wk = startOfWeekMonday(new Date(a.date)).toISOString().slice(0, 10);
-      if (!map[wk]) map[wk] = { semaine: wk, distance_km: 0, d_plus: 0 };
-      map[wk].distance_km += a.distance_km; map[wk].d_plus += a.d_plus;
-    });
-    return Object.values(map).sort((a, b) => new Date(a.semaine) - new Date(b.semaine)).slice(-12).map(w => ({ ...w, distance_km: +w.distance_km.toFixed(1) }));
-  }, [activities]);
-
   // Prochaine course (la plus proche non passée), utilisée pour le tableau de bord Home
   const nextGoal = useMemo(() => {
     const upcoming = goals.filter(g => daysUntil(g.date) >= 0).sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -385,6 +374,72 @@ export default function TrailTracker() {
     }
     return null;
   }, [nextPlan, currentWeek, todayIso]);
+
+  // Dashboard 1 — cumul km réel vs cible (cible = plan.weeks[i].targetKm cumulé, la même cible totale
+  // ajustable qu'utilisent la Comparaison et le Plan de l'onglet Programme)
+  const cumulKmSeries = useMemo(() => {
+    if (!nextPlan) return [];
+    let cibleCum = 0, reelCum = 0;
+    return nextPlan.weeks.map(w => {
+      cibleCum += w.targetKm;
+      const started = w.start <= todayIso;
+      if (started) {
+        const acts = activities.filter(a => a.date >= w.start && a.date <= w.end);
+        reelCum += acts.reduce((s, a) => s + (a.distance_km || 0), 0);
+      }
+      return { date: w.end, cible: +cibleCum.toFixed(1), reel: started ? +reelCum.toFixed(1) : null };
+    });
+  }, [nextPlan, activities, todayIso]);
+
+  // Dashboard 2 — VO2max réelle vs prévisionnelle. La prévisionnelle suit la trajectoire linéaire
+  // start → target de la cible nominale vo2max, mais la portion passée est pondérée par l'adhérence
+  // réelle au programme (séances réalisées / séances prévues à ce jour) ; la portion future prolonge
+  // depuis ce point ajusté jusqu'à la cible à la date de course.
+  const vo2ProjectionSeries = useMemo(() => {
+    if (!nextGoal || !nextPlan) return { points: [], hasTarget: false };
+    const vo2Target = (nextGoal.nominalTargets || []).find(t => t.type === "vo2max");
+    const windowStart = nextPlan.windowStart;
+    const raceDate = nextGoal.date;
+    const realPoints = activities.filter(a => a.vo2max && a.date >= windowStart && a.date <= raceDate);
+    if (!vo2Target) {
+      return { points: realPoints.map(a => ({ date: a.date, reel: a.vo2max, previsionnel: null })), hasTarget: false };
+    }
+    const spanMs = new Date(raceDate) - new Date(windowStart) || 1;
+    const fractionOf = d => clamp01((new Date(d) - new Date(windowStart)) / spanMs);
+    const todayFraction = Math.min(clamp01(fractionOf(todayIso)), 0.999);
+
+    const allSessions = nextPlan.weeks.flatMap(w => w.sessions);
+    const pastSessions = allSessions.filter(s => s.date <= todayIso && !(s.type || "").includes("Repos"));
+    const realizedCount = pastSessions.filter(s => findActivity(s.date, activities)).length;
+    const adherence = pastSessions.length ? realizedCount / pastSessions.length : 1;
+
+    const { start, target } = vo2Target;
+    function projectedValue(fraction) {
+      if (fraction <= todayFraction) return +(start + (target - start) * fraction * adherence).toFixed(1);
+      const todayVal = start + (target - start) * todayFraction * adherence;
+      return +(todayVal + (target - todayVal) * ((fraction - todayFraction) / (1 - todayFraction))).toFixed(1);
+    }
+
+    const dates = Array.from(new Set([...realPoints.map(a => a.date), ...nextPlan.weeks.map(w => w.end)])).sort();
+    const points = dates.map(d => ({
+      date: d,
+      reel: realPoints.find(a => a.date === d)?.vo2max ?? null,
+      previsionnel: projectedValue(fractionOf(d)),
+    }));
+    return { points, hasTarget: true, adherence };
+  }, [nextGoal, nextPlan, activities, todayIso]);
+
+  // Dashboard 3 — volume hebdo réalisé vs programme prévu (semaines déjà entamées uniquement)
+  const weeklyVsPlanSeries = useMemo(() => {
+    if (!nextPlan) return [];
+    return nextPlan.weeks
+      .filter(w => w.start <= todayIso)
+      .map(w => {
+        const acts = activities.filter(a => a.date >= w.start && a.date <= w.end);
+        const reel = +acts.reduce((s, a) => s + (a.distance_km || 0), 0).toFixed(1);
+        return { semaine: w.start, reel, prevu: w.targetKm };
+      });
+  }, [nextPlan, activities, todayIso]);
 
   if (loading) return <div style={{ background: C.bg, color: C.muted, minHeight: 400, display: "flex", alignItems: "center", justifyContent: "center" }}>Chargement…</div>;
 
@@ -425,35 +480,61 @@ export default function TrailTracker() {
     </>
   );
 
-  const charts = activities.length > 0 && (
+  const dashboards = nextGoal && nextPlan && (
     <>
-      {vo2Series.length > 1 && (
+      {cumulKmSeries.length > 1 && (
         <Card style={{ marginBottom: 16 }}>
-          <SectionLabel icon={Gauge}>VO2max estimé</SectionLabel>
-          <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={vo2Series}>
+          <SectionLabel icon={Target}>Cumul km — réel vs cible</SectionLabel>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={cumulKmSeries}>
               <CartesianGrid stroke={C.border} vertical={false} />
               <XAxis dataKey="date" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={30} />
-              <YAxis tick={CHART_TEXT} width={30} domain={["dataMin - 1", "dataMax + 1"]} />
+              <YAxis tick={CHART_TEXT} width={36} />
               <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
-              <Line type="monotone" dataKey="vo2max" stroke={C.gold} strokeWidth={2} dot={false} />
+              <Legend wrapperStyle={{ fontSize: 11, color: C.muted }} />
+              <Line type="monotone" dataKey="cible" name="Cible cumulée (km)" stroke={C.muted} strokeWidth={2} strokeDasharray="4 3" dot={false} />
+              <Line type="monotone" dataKey="reel" name="Réel cumulé (km)" stroke={C.pine} strokeWidth={2} dot={false} connectNulls />
             </LineChart>
           </ResponsiveContainer>
         </Card>
       )}
-      {weekly.length > 1 && (
-        <Card style={{ marginBottom: 20 }}>
-          <SectionLabel icon={Activity}>Charge hebdomadaire</SectionLabel>
-          <ResponsiveContainer width="100%" height={190}>
-            <ComposedChart data={weekly}>
+
+      {vo2ProjectionSeries.points.length > 1 && (
+        <Card style={{ marginBottom: 16 }}>
+          <SectionLabel icon={Gauge}>VO2max — réelle et prévisionnelle</SectionLabel>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={vo2ProjectionSeries.points}>
               <CartesianGrid stroke={C.border} vertical={false} />
-              <XAxis dataKey="semaine" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={20} />
-              <YAxis yAxisId="l" tick={CHART_TEXT} width={30} />
-              <YAxis yAxisId="r" orientation="right" tick={CHART_TEXT} width={30} />
+              <XAxis dataKey="date" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={30} />
+              <YAxis tick={CHART_TEXT} width={30} domain={["dataMin - 1", "dataMax + 1"]} />
               <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
               <Legend wrapperStyle={{ fontSize: 11, color: C.muted }} />
-              <Bar yAxisId="l" dataKey="distance_km" name="Distance (km)" fill={C.pine} radius={[3, 3, 0, 0]} />
-              <Line yAxisId="r" type="monotone" dataKey="d_plus" name="D+ (m)" stroke={C.blaze} strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="reel" name="VO2max réelle" stroke={C.gold} strokeWidth={2} connectNulls dot />
+              {vo2ProjectionSeries.hasTarget && (
+                <Line type="monotone" dataKey="previsionnel" name="Prévisionnelle (selon réalisation du programme)" stroke={C.blaze} strokeWidth={2} strokeDasharray="4 3" dot={false} />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+          {!vo2ProjectionSeries.hasTarget && (
+            <p style={{ color: C.muted, fontSize: 11, marginTop: 8 }}>
+              Ajoute une cible VO2max (Programme → Cibles nominales) pour voir la prévisionnelle.
+            </p>
+          )}
+        </Card>
+      )}
+
+      {weeklyVsPlanSeries.length > 0 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel icon={Activity}>Volume hebdo — réalisé vs prévu</SectionLabel>
+          <ResponsiveContainer width="100%" height={190}>
+            <ComposedChart data={weeklyVsPlanSeries}>
+              <CartesianGrid stroke={C.border} vertical={false} />
+              <XAxis dataKey="semaine" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={20} />
+              <YAxis tick={CHART_TEXT} width={30} />
+              <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
+              <Legend wrapperStyle={{ fontSize: 11, color: C.muted }} />
+              <Bar dataKey="reel" name="Réalisé (km)" fill={C.pine} radius={[3, 3, 0, 0]} />
+              <Line type="monotone" dataKey="prevu" name="Prévu (km)" stroke={C.gold} strokeWidth={2} strokeDasharray="4 3" dot={{ r: 3 }} />
             </ComposedChart>
           </ResponsiveContainer>
         </Card>
@@ -516,7 +597,7 @@ export default function TrailTracker() {
               </Card>
             )}
             {importAndJournal}
-            {charts}
+            {dashboards}
           </>
         ) : (
           <>
