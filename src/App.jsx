@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Papa from "papaparse";
+import storage from "./storage.js";
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, ComposedChart,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend
 } from "recharts";
 import {
   Upload, Mountain, Flag, Plus, Trash2, X, ChevronDown, ChevronUp,
-  TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen
+  TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen, Home as HomeIcon
 } from "lucide-react";
 
 // ---------- Design tokens (placeholder — design pass later) ----------
@@ -276,6 +277,7 @@ export default function TrailTracker() {
   const [goals, setGoals] = useState([]);
   const [journal, setJournal] = useState({});
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("home");
   const [expandedGoal, setExpandedGoal] = useState(null);
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [importMode, setImportMode] = useState("file");
@@ -283,6 +285,7 @@ export default function TrailTracker() {
   const [error, setError] = useState("");
   const fileInput = useRef(null);
   const today = new Date();
+  const todayIso = isoDate(today);
 
   useEffect(() => {
     (async () => {
@@ -347,7 +350,116 @@ export default function TrailTracker() {
     return Object.values(map).sort((a, b) => new Date(a.semaine) - new Date(b.semaine)).slice(-12).map(w => ({ ...w, distance_km: +w.distance_km.toFixed(1) }));
   }, [activities]);
 
+  // Prochaine course (la plus proche non passée), utilisée pour le tableau de bord Home
+  const nextGoal = useMemo(() => {
+    const upcoming = goals.filter(g => daysUntil(g.date) >= 0).sort((a, b) => new Date(a.date) - new Date(b.date));
+    return upcoming[0] || null;
+  }, [goals]);
+  const nextPlan = nextGoal ? plans[nextGoal.id] : null;
+  const nextScore = nextGoal ? scores[nextGoal.id] : null;
+
+  const currentWeek = useMemo(() => {
+    if (!nextPlan) return null;
+    return nextPlan.weeks.find(w => w.start <= todayIso && todayIso <= w.end) || null;
+  }, [nextPlan, todayIso]);
+
+  const currentWeekReal = useMemo(() => {
+    if (!currentWeek) return { km: 0, dplus: 0 };
+    const acts = activities.filter(a => a.date >= currentWeek.start && a.date <= currentWeek.end);
+    return {
+      km: +acts.reduce((s, a) => s + (a.distance_km || 0), 0).toFixed(1),
+      dplus: Math.round(acts.reduce((s, a) => s + (a.d_plus || 0), 0)),
+    };
+  }, [currentWeek, activities]);
+
+  const nextSession = useMemo(() => {
+    if (!nextPlan) return null;
+    const startIdx = currentWeek ? nextPlan.weeks.indexOf(currentWeek) : nextPlan.weeks.findIndex(w => w.start >= todayIso);
+    const searchWeeks = startIdx === -1 ? [] : nextPlan.weeks.slice(startIdx);
+    for (const w of searchWeeks) {
+      const candidate = w.sessions
+        .filter(s => !(s.type || "").includes("Repos"))
+        .filter(s => s.date >= todayIso)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))[0];
+      if (candidate) return candidate;
+    }
+    return null;
+  }, [nextPlan, currentWeek, todayIso]);
+
   if (loading) return <div style={{ background: C.bg, color: C.muted, minHeight: 400, display: "flex", alignItems: "center", justifyContent: "center" }}>Chargement…</div>;
+
+  const importAndJournal = (
+    <>
+      <Card style={{ marginBottom: 20 }}>
+        <SectionLabel icon={Upload}>Importer des données</SectionLabel>
+        <div className="flex gap-2 mb-3">
+          <button onClick={() => setImportMode("file")} style={btnStyle(importMode === "file")}>Fichier</button>
+          <button onClick={() => setImportMode("paste")} style={btnStyle(importMode === "paste")}>Coller le CSV</button>
+        </div>
+        {importMode === "file" ? (
+          <div>
+            <input ref={fileInput} type="file" accept=".csv" onChange={onFile} style={{ display: "none" }} />
+            <button onClick={() => fileInput.current?.click()} style={btnStyle(true)}>Choisir garmin_export.csv</button>
+          </div>
+        ) : (
+          <div>
+            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="Colle ici le contenu du CSV"
+              style={{ width: "100%", height: 90, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 12, ...mono }} />
+            <button onClick={onPasteImport} style={{ ...btnStyle(true), marginTop: 8 }}>Importer</button>
+          </div>
+        )}
+        {error && <p style={{ color: C.brick, fontSize: 12, marginTop: 8 }}>{error}</p>}
+        {activities.length > 0 && <p style={{ color: C.pine, fontSize: 12, marginTop: 10 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>}
+      </Card>
+
+      {needsJournal.length > 0 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel icon={BookOpen}>Journal — note ces sorties</SectionLabel>
+          <div style={{ display: "grid", gap: 8 }}>
+            {needsJournal.map((a, i) => (
+              <JournalPrompt key={i} activity={a} onSave={(score, note) => persistJournal({ ...journal, [a.date]: { score, note } })} />
+            ))}
+          </div>
+        </Card>
+      )}
+    </>
+  );
+
+  const charts = activities.length > 0 && (
+    <>
+      {vo2Series.length > 1 && (
+        <Card style={{ marginBottom: 16 }}>
+          <SectionLabel icon={Gauge}>VO2max estimé</SectionLabel>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={vo2Series}>
+              <CartesianGrid stroke={C.border} vertical={false} />
+              <XAxis dataKey="date" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={30} />
+              <YAxis tick={CHART_TEXT} width={30} domain={["dataMin - 1", "dataMax + 1"]} />
+              <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
+              <Line type="monotone" dataKey="vo2max" stroke={C.gold} strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
+      {weekly.length > 1 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel icon={Activity}>Charge hebdomadaire</SectionLabel>
+          <ResponsiveContainer width="100%" height={190}>
+            <ComposedChart data={weekly}>
+              <CartesianGrid stroke={C.border} vertical={false} />
+              <XAxis dataKey="semaine" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={20} />
+              <YAxis yAxisId="l" tick={CHART_TEXT} width={30} />
+              <YAxis yAxisId="r" orientation="right" tick={CHART_TEXT} width={30} />
+              <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
+              <Legend wrapperStyle={{ fontSize: 11, color: C.muted }} />
+              <Bar yAxisId="l" dataKey="distance_km" name="Distance (km)" fill={C.pine} radius={[3, 3, 0, 0]} />
+              <Line yAxisId="r" type="monotone" dataKey="d_plus" name="D+ (m)" stroke={C.blaze} strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
+    </>
+  );
 
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
@@ -356,146 +468,128 @@ export default function TrailTracker() {
           <Mountain size={18} /><span style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", fontWeight: 700 }}>Carnet de trail</span>
         </div>
         <h1 style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>Objectifs & préparation</h1>
+        <div className="flex gap-2" style={{ marginTop: 14 }}>
+          <button onClick={() => setView("home")} style={btnStyle(view === "home")} className="flex items-center gap-1"><HomeIcon size={13} /> Home</button>
+          <button onClick={() => setView("programme")} style={btnStyle(view === "programme")} className="flex items-center gap-1"><Flag size={13} /> Programme</button>
+        </div>
       </div>
 
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px" }}>
-        <Card style={{ marginBottom: 20 }}>
-          <SectionLabel icon={Upload}>Importer des données</SectionLabel>
-          <div className="flex gap-2 mb-3">
-            <button onClick={() => setImportMode("file")} style={btnStyle(importMode === "file")}>Fichier</button>
-            <button onClick={() => setImportMode("paste")} style={btnStyle(importMode === "paste")}>Coller le CSV</button>
-          </div>
-          {importMode === "file" ? (
-            <div>
-              <input ref={fileInput} type="file" accept=".csv" onChange={onFile} style={{ display: "none" }} />
-              <button onClick={() => fileInput.current?.click()} style={btnStyle(true)}>Choisir garmin_export.csv</button>
-            </div>
-          ) : (
-            <div>
-              <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder="Colle ici le contenu du CSV"
-                style={{ width: "100%", height: 90, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 12, ...mono }} />
-              <button onClick={onPasteImport} style={{ ...btnStyle(true), marginTop: 8 }}>Importer</button>
-            </div>
-          )}
-          {error && <p style={{ color: C.brick, fontSize: 12, marginTop: 8 }}>{error}</p>}
-          {activities.length > 0 && <p style={{ color: C.pine, fontSize: 12, marginTop: 10 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>}
-        </Card>
-
-        {needsJournal.length > 0 && (
-          <Card style={{ marginBottom: 20 }}>
-            <SectionLabel icon={BookOpen}>Journal — note ces sorties</SectionLabel>
-            <div style={{ display: "grid", gap: 8 }}>
-              {needsJournal.map((a, i) => (
-                <JournalPrompt key={i} activity={a} onSave={(score, note) => persistJournal({ ...journal, [a.date]: { score, note } })} />
-              ))}
-            </div>
-          </Card>
-        )}
-
-        <SectionLabel icon={Flag}>Objectifs</SectionLabel>
-        <div style={{ display: "grid", gap: 10, marginBottom: 20 }}>
-          {goals.map(g => {
-            const d = daysUntil(g.date);
-            const score = scores[g.id];
-            const isExpanded = expandedGoal === g.id;
-            const childOf = goals.find(o => o.id === g.isPrepFor);
-            return (
-              <Card key={g.id}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 15 }}>{g.nom}</div>
-                    <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>
-                      {fmtDateFR(g.date)} · {g.distance} km · {g.dplus || "—"} m D+
-                      {childOf && <> · étape vers {childOf.nom}</>}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div style={{ ...mono, fontSize: 20, fontWeight: 700, color: d < 0 ? C.muted : C.gold }}>{d < 0 ? "passée" : `J-${d}`}</div>
-                    <button onClick={() => setExpandedGoal(isExpanded ? null : g.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
-                      {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                    </button>
-                  </div>
-                </div>
-                <div style={{ marginTop: 10 }}>
-                  <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
-                    <span>Atteinte de l'objectif</span>
-                    <span style={{ ...mono, color: C.text }}>{score?.notStarted || score?.global == null ? "—" : `${score.global}%`}</span>
-                  </div>
-                  {score?.notStarted || score?.global == null
-                    ? <p style={{ color: C.muted, fontSize: 11 }}>Renseigne tes disponibilités pour activer le suivi.</p>
-                    : <>
-                        <ProgressBar pct={score.global} />
-                        <p style={{ color: C.muted, fontSize: 11, marginTop: 5, ...mono }}>
-                          Cumul : {score.cumulative.realKm}/{score.cumulative.idealKm}km · {score.cumulative.realDplus}/{score.cumulative.idealDplus}m D+
-                        </p>
-                      </>}
-                </div>
-                {isExpanded && (
-                  <GoalDetail goal={g} goals={goals} plan={plans[g.id]} score={score} activities={activities}
-                    onUpdate={updater => updateGoal(g.id, updater)} onRemove={() => { removeGoal(g.id); setExpandedGoal(null); }} today={today} />
-                )}
-              </Card>
-            );
-          })}
-          {!showGoalForm ? (
-            <button onClick={() => setShowGoalForm(true)} className="flex items-center gap-2 justify-center"
-              style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12, color: C.muted, background: "none", cursor: "pointer", fontSize: 13 }}>
-              <Plus size={14} /> Ajouter une course
-            </button>
-          ) : <GoalForm goals={goals} onCancel={() => setShowGoalForm(false)} onSave={addGoal} />}
-        </div>
-
-        {goals.length > 1 && (
-          <Card style={{ marginBottom: 20 }}>
-            <SectionLabel icon={Target}>Vue globale</SectionLabel>
-            <div style={{ display: "grid", gap: 10 }}>
-              {goals.map(g => (
-                <div key={g.id} className="flex items-center justify-between">
-                  <span style={{ fontSize: 13 }}>{g.nom}</span>
-                  <div className="flex items-center gap-2" style={{ width: "55%" }}>
-                    <ProgressBar pct={scores[g.id]?.global ?? 0} />
-                    <span style={{ ...mono, fontSize: 12, width: 32, textAlign: "right" }}>{scores[g.id]?.notStarted || scores[g.id]?.global == null ? "—" : `${scores[g.id].global}%`}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <p style={{ color: C.muted, fontSize: 11, marginTop: 10 }}>
-              Les courses marquées "étape vers" partagent leurs semaines de préparation avec l'objectif final — leur résultat nourrit le score de l'objectif suivant.
-            </p>
-          </Card>
-        )}
-
-        {activities.length > 0 && (
+        {view === "home" ? (
           <>
-            {vo2Series.length > 1 && (
-              <Card style={{ marginBottom: 16 }}>
-                <SectionLabel icon={Gauge}>VO2max estimé</SectionLabel>
-                <ResponsiveContainer width="100%" height={160}>
-                  <LineChart data={vo2Series}>
-                    <CartesianGrid stroke={C.border} vertical={false} />
-                    <XAxis dataKey="date" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={30} />
-                    <YAxis tick={CHART_TEXT} width={30} domain={["dataMin - 1", "dataMax + 1"]} />
-                    <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
-                    <Line type="monotone" dataKey="vo2max" stroke={C.gold} strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+            {nextGoal ? (
+              <Card style={{ marginBottom: 20 }}>
+                <SectionLabel icon={Flag}>{nextGoal.nom}</SectionLabel>
+                <div className="flex items-center justify-between">
+                  <div style={{ ...mono, fontSize: 32, fontWeight: 800, color: C.gold }}>J-{daysUntil(nextGoal.date)}</div>
+                  <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: C.text }}>
+                    {nextScore?.notStarted || nextScore?.global == null ? "—" : `${nextScore.global}%`}
+                  </div>
+                </div>
+                {!(nextScore?.notStarted || nextScore?.global == null) && <ProgressBar pct={nextScore.global} />}
+                <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
+                  <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+                    <span>Cette semaine</span>
+                  </div>
+                  {currentWeek ? (
+                    <p style={{ ...mono, fontSize: 15, color: C.text }}>
+                      {currentWeekReal.km}/{currentWeek.targetKm}km · {currentWeekReal.dplus}/{currentWeek.targetDplus}m D+
+                    </p>
+                  ) : (
+                    <p style={{ color: C.muted, fontSize: 12 }}>Hors fenêtre de préparation.</p>
+                  )}
+                </div>
+                <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 12, paddingTop: 12 }}>
+                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Prochaine séance</div>
+                  {nextSession ? (
+                    <p style={{ fontSize: 13, color: C.text }}>
+                      {fmtDateFR(nextSession.date)} · {nextSession.type} · {nextSession.estKm}km{nextSession.estDplus ? ` · ${nextSession.estDplus}m D+` : ""}
+                    </p>
+                  ) : (
+                    <p style={{ color: C.muted, fontSize: 12 }}>Aucune séance à venir dans le programme.</p>
+                  )}
+                </div>
+              </Card>
+            ) : (
+              <Card style={{ marginBottom: 20 }}>
+                <p style={{ color: C.muted, fontSize: 13 }}>Aucune course à venir — ajoute un objectif dans l'onglet Programme.</p>
               </Card>
             )}
-            {weekly.length > 1 && (
-              <Card>
-                <SectionLabel icon={Activity}>Charge hebdomadaire</SectionLabel>
-                <ResponsiveContainer width="100%" height={190}>
-                  <ComposedChart data={weekly}>
-                    <CartesianGrid stroke={C.border} vertical={false} />
-                    <XAxis dataKey="semaine" tick={CHART_TEXT} tickFormatter={fmtDateFR} minTickGap={20} />
-                    <YAxis yAxisId="l" tick={CHART_TEXT} width={30} />
-                    <YAxis yAxisId="r" orientation="right" tick={CHART_TEXT} width={30} />
-                    <Tooltip contentStyle={tooltipStyle()} labelFormatter={fmtDateFR} />
-                    <Legend wrapperStyle={{ fontSize: 11, color: C.muted }} />
-                    <Bar yAxisId="l" dataKey="distance_km" name="Distance (km)" fill={C.pine} radius={[3, 3, 0, 0]} />
-                    <Line yAxisId="r" type="monotone" dataKey="d_plus" name="D+ (m)" stroke={C.blaze} strokeWidth={2} dot={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
+            {importAndJournal}
+            {charts}
+          </>
+        ) : (
+          <>
+            <SectionLabel icon={Flag}>Objectifs</SectionLabel>
+            <div style={{ display: "grid", gap: 10, marginBottom: 20 }}>
+              {goals.map(g => {
+                const d = daysUntil(g.date);
+                const score = scores[g.id];
+                const isExpanded = expandedGoal === g.id;
+                const childOf = goals.find(o => o.id === g.isPrepFor);
+                return (
+                  <Card key={g.id}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 15 }}>{g.nom}</div>
+                        <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>
+                          {fmtDateFR(g.date)} · {g.distance} km · {g.dplus || "—"} m D+
+                          {childOf && <> · étape vers {childOf.nom}</>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div style={{ ...mono, fontSize: 20, fontWeight: 700, color: d < 0 ? C.muted : C.gold }}>{d < 0 ? "passée" : `J-${d}`}</div>
+                        <button onClick={() => setExpandedGoal(isExpanded ? null : g.id)} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}>
+                          {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                      <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+                        <span>Atteinte de l'objectif</span>
+                        <span style={{ ...mono, color: C.text }}>{score?.notStarted || score?.global == null ? "—" : `${score.global}%`}</span>
+                      </div>
+                      {score?.notStarted || score?.global == null
+                        ? <p style={{ color: C.muted, fontSize: 11 }}>Renseigne tes disponibilités pour activer le suivi.</p>
+                        : <>
+                            <ProgressBar pct={score.global} />
+                            <p style={{ color: C.muted, fontSize: 11, marginTop: 5, ...mono }}>
+                              Cumul : {score.cumulative.realKm}/{score.cumulative.idealKm}km · {score.cumulative.realDplus}/{score.cumulative.idealDplus}m D+
+                            </p>
+                          </>}
+                    </div>
+                    {isExpanded && (
+                      <GoalDetail goal={g} goals={goals} plan={plans[g.id]} score={score} activities={activities}
+                        onUpdate={updater => updateGoal(g.id, updater)} onRemove={() => { removeGoal(g.id); setExpandedGoal(null); }} today={today} />
+                    )}
+                  </Card>
+                );
+              })}
+              {!showGoalForm ? (
+                <button onClick={() => setShowGoalForm(true)} className="flex items-center gap-2 justify-center"
+                  style={{ border: `1px dashed ${C.border}`, borderRadius: 10, padding: 12, color: C.muted, background: "none", cursor: "pointer", fontSize: 13 }}>
+                  <Plus size={14} /> Ajouter une course
+                </button>
+              ) : <GoalForm goals={goals} onCancel={() => setShowGoalForm(false)} onSave={addGoal} />}
+            </div>
+
+            {goals.length > 1 && (
+              <Card style={{ marginBottom: 20 }}>
+                <SectionLabel icon={Target}>Vue globale</SectionLabel>
+                <div style={{ display: "grid", gap: 10 }}>
+                  {goals.map(g => (
+                    <div key={g.id} className="flex items-center justify-between">
+                      <span style={{ fontSize: 13 }}>{g.nom}</span>
+                      <div className="flex items-center gap-2" style={{ width: "55%" }}>
+                        <ProgressBar pct={scores[g.id]?.global ?? 0} />
+                        <span style={{ ...mono, fontSize: 12, width: 32, textAlign: "right" }}>{scores[g.id]?.notStarted || scores[g.id]?.global == null ? "—" : `${scores[g.id].global}%`}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ color: C.muted, fontSize: 11, marginTop: 10 }}>
+                  Les courses marquées "étape vers" partagent leurs semaines de préparation avec l'objectif final — leur résultat nourrit le score de l'objectif suivant.
+                </p>
               </Card>
             )}
           </>
@@ -505,40 +599,42 @@ export default function TrailTracker() {
   );
 }
 
-// ---------- Goal detail (programme, cibles nominales, plan, score) ----------
+// ---------- Accordion (sections empilées, sans changement d'onglet) ----------
+function AccordionSection({ title, icon: Icon, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <button onClick={() => setOpen(o => !o)} className="flex items-center justify-between"
+        style={{ width: "100%", background: C.surfaceHi, border: `1px solid ${C.border}`, borderRadius: 8, padding: "9px 12px", cursor: "pointer" }}>
+        <span className="flex items-center gap-2" style={{ color: C.text, fontSize: 13, fontWeight: 700 }}>
+          {Icon && <Icon size={14} style={{ color: C.muted }} />} {title}
+        </span>
+        {open ? <ChevronUp size={16} color={C.muted} /> : <ChevronDown size={16} color={C.muted} />}
+      </button>
+      {open && <div style={{ marginTop: 8 }}>{children}</div>}
+    </div>
+  );
+}
+
+// ---------- Goal detail (programme, cibles nominales, plan, score) — une seule page, sections empilées ----------
 function GoalDetail({ goal, goals, plan, score, activities, onUpdate, onRemove, today }) {
-  const [tab, setTab] = useState("comparaison");
   return (
     <div style={{ marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
-      <div className="flex gap-2 mb-3">
-        {[["comparaison", "Comparaison"], ["programme", "Mon programme"], ["plan", "Plan"], ["cibles", "Cibles"], ["score", "Détail score"]].map(([k, label]) => (
-          <button key={k} onClick={() => setTab(k)} style={btnStyle(tab === k)}>{label}</button>
-        ))}
-        <button onClick={onRemove} style={{ marginLeft: "auto", background: "none", border: "none", color: C.muted, cursor: "pointer" }}><Trash2 size={14} /></button>
+      <div className="flex justify-end mb-2">
+        <button onClick={onRemove} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer" }}><Trash2 size={14} /></button>
       </div>
 
-      {tab === "programme" && <ProgramEditor goal={goal} onUpdate={onUpdate} />}
-      {tab === "comparaison" && <ComparisonPanel plan={plan} goal={goal} onUpdate={onUpdate} />}
-      {tab === "cibles" && <NominalTargetsEditor goal={goal} activities={activities} onUpdate={onUpdate} />}
-      {tab === "score" && (
-        score?.notStarted || score?.global == null ? (
-          <p style={{ color: C.muted, fontSize: 12 }}>Pas encore de séance à comparer à ce jour — vérifie ton programme dans l'onglet dédié.</p>
-        ) : (
-        <div style={{ display: "grid", gap: 8 }}>
-          {Object.entries(score?.breakdown || {}).map(([k, v]) => (
-            <div key={k}>
-              <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>
-                <span>{k}</span><span style={{ ...mono, color: C.text }}>{v}%</span>
-              </div>
-              <ProgressBar pct={v} color={C.pine} />
-            </div>
-          ))}
-        </div>
-        )
-      )}
-      {tab === "plan" && (
-        (goal.program?.sessions || []).length === 0 ? (
-          <p style={{ color: C.muted, fontSize: 12 }}>Renseigne d'abord ton programme (onglet "Mon programme") pour voir le plan semaine par semaine.</p>
+      <AccordionSection title="Comparaison" icon={Target} defaultOpen>
+        <ComparisonPanel plan={plan} goal={goal} onUpdate={onUpdate} />
+      </AccordionSection>
+
+      <AccordionSection title="Mon programme" icon={Settings2} defaultOpen>
+        <ProgramEditor goal={goal} onUpdate={onUpdate} />
+      </AccordionSection>
+
+      <AccordionSection title="Plan semaine par semaine" icon={CalendarDays} defaultOpen={false}>
+        {(goal.program?.sessions || []).length === 0 ? (
+          <p style={{ color: C.muted, fontSize: 12 }}>Renseigne d'abord ton programme (section "Mon programme") pour voir le plan semaine par semaine.</p>
         ) : (
           <div>
             <div style={{ background: C.surfaceHi, borderRadius: 8, padding: 10, marginBottom: 10 }}>
@@ -585,8 +681,29 @@ function GoalDetail({ goal, goals, plan, score, activities, onUpdate, onRemove, 
             })}
             </div>
           </div>
-        )
-      )}
+        )}
+      </AccordionSection>
+
+      <AccordionSection title="Cibles nominales" icon={Target} defaultOpen={false}>
+        <NominalTargetsEditor goal={goal} activities={activities} onUpdate={onUpdate} />
+      </AccordionSection>
+
+      <AccordionSection title="Détail du score" icon={Gauge} defaultOpen={false}>
+        {score?.notStarted || score?.global == null ? (
+          <p style={{ color: C.muted, fontSize: 12 }}>Pas encore de séance à comparer à ce jour — vérifie ton programme ci-dessus.</p>
+        ) : (
+          <div style={{ display: "grid", gap: 8 }}>
+            {Object.entries(score?.breakdown || {}).map(([k, v]) => (
+              <div key={k}>
+                <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>
+                  <span>{k}</span><span style={{ ...mono, color: C.text }}>{v}%</span>
+                </div>
+                <ProgressBar pct={v} color={C.pine} />
+              </div>
+            ))}
+          </div>
+        )}
+      </AccordionSection>
     </div>
   );
 }
@@ -684,7 +801,9 @@ function ComparisonPanel({ plan, goal, onUpdate }) {
               <p style={{ fontSize: 12, marginTop: 6, color: C.text }}>
                 {p.deltaKm < 0
                   ? `Ajoute environ ${Math.abs(p.deltaKm)}km/semaine — augmente "${flexSession?.type}"${flexSession?.start ? ` (${flexSession.day} ${flexSession.start}–${flexSession.end}, même créneau)` : ` (${flexSession?.day}, même jour)`}.`
-                  : `Réduis d'environ ${Math.abs(p.deltaKm)}km/semaine sur cette phase (typiquement en affûtage, c'est volontaire).`}
+                  : p.phase === "Affûtage"
+                    ? `Réduis d'environ ${Math.abs(p.deltaKm)}km/semaine sur cette phase (typiquement en affûtage, c'est volontaire).`
+                    : `Ton programme dépasse le besoin de cette phase, pas d'ajustement nécessaire sauf si tu sens une fatigue excessive.`}
               </p>
             )}
           </div>
