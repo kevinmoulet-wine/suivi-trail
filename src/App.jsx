@@ -342,11 +342,6 @@ export default function TrailTracker() {
     return map;
   }, [goals, plans, activities]);
 
-  const needsJournal = useMemo(() => {
-    const cutoff = Date.now() - 14 * 86400000;
-    return activities.filter(a => new Date(a.date).getTime() >= cutoff && !journal[a.date]);
-  }, [activities, journal]);
-
   if (loading) return <div style={{ background: C.bg, color: C.muted, minHeight: 400, display: "flex", alignItems: "center", justifyContent: "center" }}>Chargement…</div>;
 
   const importSection = (
@@ -370,17 +365,6 @@ export default function TrailTracker() {
       )}
       {error && <p style={{ color: C.brick, fontSize: 12, marginTop: 8 }}>{error}</p>}
       {activities.length > 0 && <p style={{ color: C.pine, fontSize: 12, marginTop: 10 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>}
-    </Card>
-  );
-
-  const journalSection = needsJournal.length > 0 && (
-    <Card style={{ marginBottom: 20 }}>
-      <SectionLabel icon={BookOpen}>Journal — note ces sorties</SectionLabel>
-      <div style={{ display: "grid", gap: 8 }}>
-        {needsJournal.map((a, i) => (
-          <JournalPrompt key={i} activity={a} onSave={(score, note) => persistJournal({ ...journal, [a.date]: { score, note } })} />
-        ))}
-      </div>
     </Card>
   );
 
@@ -412,7 +396,6 @@ export default function TrailTracker() {
             <MonthCalendar goals={goals} />
             <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} journal={journal}
               onSaveNote={(date, score, note) => persistJournal({ ...journal, [date]: { score, note } })} />
-            {journalSection}
           </>
         )}
 
@@ -1084,19 +1067,6 @@ function NominalTargetsEditor({ goal, activities, onUpdate }) {
   );
 }
 
-function JournalPrompt({ activity, onSave }) {
-  const [score, setScore] = useState(""); const [note, setNote] = useState("");
-  return (
-    <div style={{ background: C.surfaceHi, borderRadius: 8, padding: 10 }}>
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>{fmtDateFR(activity.date)} · {activity.nom} · {activity.distance_km}km</div>
-      <div className="flex gap-2">
-        <input type="number" min="1" max="10" value={score} onChange={e => setScore(e.target.value)} placeholder="/10" style={{ ...inputStyle(), flex: "0 0 60px" }} />
-        <input value={note} onChange={e => setNote(e.target.value)} placeholder="Ressenti (optionnel)" style={inputStyle()} />
-        <button onClick={() => score && onSave(+score, note)} style={btnStyle(true)}>Noter</button>
-      </div>
-    </div>
-  );
-}
 
 function PersonalDataForm({ profile, onUpdate }) {
   function setField(key) { return e => onUpdate({ ...profile, [key]: e.target.value }); }
