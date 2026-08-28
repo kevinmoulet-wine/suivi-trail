@@ -40,6 +40,11 @@ function timeToDecimal(t) {
   return h + (m || 0) / 60;
 }
 const DAY_ORDER = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+const GOAL_TAG_COLORS = [C.blaze, C.pine, C.gold, C.brick];
+function goalColor(goals, goalId) {
+  const idx = goals.findIndex(g => g.id === goalId);
+  return GOAL_TAG_COLORS[idx % GOAL_TAG_COLORS.length] || C.muted;
+}
 
 // ---------- Plan generation ----------
 function defaultWindowWeeks(distance) {
@@ -338,14 +343,6 @@ export default function TrailTracker() {
     return activities.filter(a => new Date(a.date).getTime() >= cutoff && !journal[a.date]);
   }, [activities, journal]);
 
-  // Prochaine course (la plus proche non passée), utilisée pour le tableau de bord Home
-  const nextGoal = useMemo(() => {
-    const upcoming = goals.filter(g => daysUntil(g.date) >= 0).sort((a, b) => new Date(a.date) - new Date(b.date));
-    return upcoming[0] || null;
-  }, [goals]);
-  const nextPlan = nextGoal ? plans[nextGoal.id] : null;
-  const nextScore = nextGoal ? scores[nextGoal.id] : null;
-
   if (loading) return <div style={{ background: C.bg, color: C.muted, minHeight: 400, display: "flex", alignItems: "center", justifyContent: "center" }}>Chargement…</div>;
 
   const importAndJournal = (
@@ -408,34 +405,9 @@ export default function TrailTracker() {
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px" }}>
         {view === "home" && (
           <>
-            {nextGoal ? (
-              <CourseDashboards goal={nextGoal} plan={nextPlan} score={nextScore} activities={activities} today={today} todayIso={todayIso} />
-            ) : (
-              <Card style={{ marginBottom: 20 }}>
-                <p style={{ color: C.muted, fontSize: 13 }}>Aucune course à venir — ajoute-en une avec le bouton "+" ci-dessus.</p>
-              </Card>
-            )}
-
-            {goals.length > 1 && (
-              <Card style={{ marginBottom: 20 }}>
-                <SectionLabel icon={Target}>Vue globale</SectionLabel>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {goals.map(g => (
-                    <div key={g.id} className="flex items-center justify-between">
-                      <span style={{ fontSize: 13 }}>{g.nom}</span>
-                      <div className="flex items-center gap-2" style={{ width: "55%" }}>
-                        <ProgressBar pct={scores[g.id]?.global ?? 0} />
-                        <span style={{ ...mono, fontSize: 12, width: 32, textAlign: "right" }}>{scores[g.id]?.notStarted || scores[g.id]?.global == null ? "—" : `${scores[g.id].global}%`}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <p style={{ color: C.muted, fontSize: 11, marginTop: 10 }}>
-                  Les courses marquées "étape vers" partagent leurs semaines de préparation avec l'objectif final — leur résultat nourrit le score de l'objectif suivant.
-                </p>
-              </Card>
-            )}
-
+            <CourseOverviewList goals={goals} scores={scores} onSelect={id => { setView(id); setCourseTab("suivi"); }} />
+            <MonthCalendar goals={goals} />
+            <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} />
             {importAndJournal}
           </>
         )}
@@ -665,6 +637,151 @@ function CourseDashboards({ goal, plan, score, activities, today, todayIso, show
         </Card>
       )}
     </>
+  );
+}
+
+// ---------- Suivi macro par course — liste des courses avec % d'atteinte ----------
+function CourseOverviewList({ goals, scores, onSelect }) {
+  return (
+    <>
+      <SectionLabel icon={Flag}>Mes courses</SectionLabel>
+      <div style={{ display: "grid", gap: 10, marginBottom: 20 }}>
+        {goals.length === 0 && (
+          <Card>
+            <p style={{ color: C.muted, fontSize: 13 }}>Aucune course — ajoute-en une avec le bouton "+" ci-dessus.</p>
+          </Card>
+        )}
+        {goals.map(g => {
+          const d = daysUntil(g.date);
+          const s = scores[g.id];
+          const childOf = goals.find(o => o.id === g.isPrepFor);
+          return (
+            <button key={g.id} onClick={() => onSelect(g.id)}
+              style={{ textAlign: "left", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, cursor: "pointer", color: "inherit", font: "inherit" }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15 }}>{g.nom}</div>
+                  <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>
+                    {fmtDateFR(g.date)} · {g.distance} km · {g.dplus || "—"} m D+
+                    {childOf && <> · étape vers {childOf.nom}</>}
+                  </div>
+                </div>
+                <div style={{ ...mono, fontSize: 20, fontWeight: 700, color: d < 0 ? C.muted : C.gold }}>{d < 0 ? "passée" : `J-${d}`}</div>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <div className="flex items-center justify-between" style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>
+                  <span>Atteinte de l'objectif</span>
+                  <span style={{ ...mono, color: C.text }}>{s?.notStarted || s?.global == null ? "—" : `${s.global}%`}</span>
+                </div>
+                <ProgressBar pct={s?.global ?? 0} />
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ---------- Calendrier mensuel — vue macro des courses à venir ----------
+function MonthCalendar({ goals }) {
+  const [monthDate, setMonthDate] = useState(() => { const d = new Date(); d.setDate(1); return d; });
+  const year = monthDate.getFullYear(), month = monthDate.getMonth();
+  const firstOfMonth = new Date(year, month, 1);
+  const lastOfMonth = new Date(year, month + 1, 0);
+  const startGrid = startOfWeekMonday(firstOfMonth);
+  const endGrid = addDays(startOfWeekMonday(lastOfMonth), 6);
+  const days = [];
+  for (let d = new Date(startGrid); d <= endGrid; d = addDays(d, 1)) days.push(new Date(d));
+  const todayIso = isoDate(new Date());
+
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
+        <button onClick={() => setMonthDate(d => { const n = new Date(d); n.setMonth(n.getMonth() - 1); return n; })}
+          style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 18, padding: "0 8px" }}>‹</button>
+        <span style={{ fontSize: 13, fontWeight: 700, textTransform: "capitalize" }}>
+          {monthDate.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })}
+        </span>
+        <button onClick={() => setMonthDate(d => { const n = new Date(d); n.setMonth(n.getMonth() + 1); return n; })}
+          style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 18, padding: "0 8px" }}>›</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3, fontSize: 10, color: C.muted, marginBottom: 3, textAlign: "center", textTransform: "uppercase" }}>
+        {DAY_ORDER.map(d => <div key={d}>{d}</div>)}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 3 }}>
+        {days.map((d, i) => {
+          const iso = isoDate(d);
+          const inMonth = d.getMonth() === month;
+          const races = goals.filter(g => g.date === iso);
+          return (
+            <div key={i} style={{
+              minHeight: 46, borderRadius: 6, padding: 3,
+              background: iso === todayIso ? C.surfaceHi : "transparent",
+              border: `1px solid ${iso === todayIso ? C.gold : C.border}`,
+              opacity: inMonth ? 1 : 0.3,
+            }}>
+              <div style={{ ...mono, fontSize: 10, color: C.muted }}>{d.getDate()}</div>
+              {races.map(g => (
+                <div key={g.id} title={g.nom} style={{
+                  marginTop: 2, fontSize: 9, fontWeight: 700, color: "#1A0D08", background: goalColor(goals, g.id),
+                  borderRadius: 4, padding: "1px 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  🏁 {g.nom}
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// ---------- Calendrier de la semaine en cours — séances de toutes les courses, taguées par course ----------
+function WeekCalendar({ goals, plans, todayIso }) {
+  if (!goals.length) return null;
+  const weekStart = startOfWeekMonday(new Date());
+  const days = DAY_ORDER.map((_, i) => isoDate(addDays(weekStart, i)));
+
+  const sessionsByDay = days.map(iso => {
+    const items = [];
+    goals.forEach(g => {
+      const plan = plans[g.id];
+      const week = plan?.weeks.find(w => w.start <= iso && iso <= w.end);
+      week?.sessions.filter(s => s.date === iso && !(s.type || "").includes("Repos")).forEach(s => items.push({ ...s, goal: g }));
+    });
+    return { date: iso, items };
+  });
+
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <SectionLabel icon={CalendarDays}>Cette semaine</SectionLabel>
+      <div style={{ display: "grid", gap: 8 }}>
+        {sessionsByDay.map((day, i) => (
+          <div key={day.date} className="flex items-start gap-3" style={{ padding: "6px 0", borderBottom: i < 6 ? `1px solid ${C.border}` : "none" }}>
+            <div style={{ width: 64, flexShrink: 0 }}>
+              <div style={{ fontSize: 11, color: day.date === todayIso ? C.gold : C.muted, fontWeight: day.date === todayIso ? 700 : 400, textTransform: "uppercase" }}>
+                {DAY_ORDER[i]}
+              </div>
+              <div style={{ ...mono, fontSize: 11, color: C.text }}>{fmtDateFR(day.date).replace(/\s\d{4}$/, "")}</div>
+            </div>
+            <div style={{ display: "grid", gap: 4, flex: 1 }}>
+              {day.items.length === 0 ? (
+                <span style={{ fontSize: 12, color: C.muted }}>—</span>
+              ) : day.items.map((s, j) => (
+                <div key={j} className="flex items-center gap-2" style={{ fontSize: 12 }}>
+                  <span style={{ background: goalColor(goals, s.goal.id), color: "#1A0D08", borderRadius: 4, padding: "1px 6px", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                    {s.goal.nom}
+                  </span>
+                  <span>{s.type} · {s.estKm}km{s.estDplus ? ` · ${s.estDplus}m D+` : ""}{s.start ? ` · ${s.start}–${s.end}` : ""}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
