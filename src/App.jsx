@@ -737,23 +737,37 @@ function SessionNote({ entry, onSave }) {
   const [editing, setEditing] = useState(false);
   const [score, setScore] = useState(entry?.score || "");
   const [note, setNote] = useState(entry?.note || "");
-  if (!editing) {
+
+  if (editing) {
     return (
-      <button onClick={() => setEditing(true)} className="flex items-center gap-1"
-        style={{ background: "none", border: "none", color: entry ? C.gold : C.muted, cursor: "pointer", fontSize: 11, marginLeft: "auto", flexShrink: 0, padding: 0 }}>
-        <BookOpen size={12} /> {entry ? `${entry.score}/10` : "Noter"}
+      <div className="flex items-center gap-2" style={{ marginTop: 4 }}>
+        <input type="number" min="1" max="10" value={score} onChange={e => setScore(e.target.value)} placeholder="/10"
+          style={{ width: 42, flexShrink: 0, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "3px 5px", fontSize: 11 }} />
+        <input value={note} onChange={e => setNote(e.target.value)} placeholder="Ressenti (optionnel)"
+          style={{ flex: 1, minWidth: 0, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "3px 6px", fontSize: 11 }} />
+        <button onClick={() => { if (score) { onSave(+score, note); setEditing(false); } }}
+          style={{ background: "none", border: "none", color: C.pine, cursor: "pointer", padding: 0, flexShrink: 0 }}><Check size={15} /></button>
+      </div>
+    );
+  }
+
+  if (entry) {
+    return (
+      <button onClick={() => setEditing(true)} className="flex items-center gap-2"
+        style={{ marginTop: 4, background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, textAlign: "left", font: "inherit", width: "100%" }}>
+        <span className="flex items-center gap-1" style={{ ...mono, fontSize: 11, fontWeight: 700, color: C.gold, flexShrink: 0 }}>
+          <BookOpen size={11} /> {entry.score}/10
+        </span>
+        {entry.note && <span style={{ fontSize: 11, color: C.muted, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>« {entry.note} »</span>}
       </button>
     );
   }
+
   return (
-    <div className="flex items-center gap-1" style={{ marginLeft: "auto", flexShrink: 0 }}>
-      <input type="number" min="1" max="10" value={score} onChange={e => setScore(e.target.value)} placeholder="/10"
-        style={{ width: 36, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", fontSize: 11 }} />
-      <input value={note} onChange={e => setNote(e.target.value)} placeholder="Ressenti"
-        style={{ width: 100, background: C.surfaceHi, color: C.text, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 4px", fontSize: 11 }} />
-      <button onClick={() => { if (score) { onSave(+score, note); setEditing(false); } }}
-        style={{ background: "none", border: "none", color: C.pine, cursor: "pointer", padding: 0 }}><Check size={14} /></button>
-    </div>
+    <button onClick={() => setEditing(true)} className="flex items-center gap-1"
+      style={{ marginTop: 4, background: "none", border: `1px dashed ${C.border}`, borderRadius: 4, padding: "2px 7px", color: C.muted, cursor: "pointer", fontSize: 11 }}>
+      <BookOpen size={11} /> Noter cette séance
+    </button>
   );
 }
 
@@ -788,11 +802,13 @@ function WeekCalendar({ goals, plans, todayIso, journal, onSaveNote }) {
               {day.items.length === 0 ? (
                 <span style={{ fontSize: 12, color: C.muted }}>—</span>
               ) : day.items.map((s, j) => (
-                <div key={j} className="flex items-center gap-2" style={{ fontSize: 12 }}>
-                  <span style={{ background: goalColor(goals, s.goal.id), color: "#1A0D08", borderRadius: 4, padding: "1px 6px", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                    {s.goal.nom}
-                  </span>
-                  <span>{s.type} · {s.estKm}km{s.estDplus ? ` · ${s.estDplus}m D+` : ""}{s.start ? ` · ${s.start}–${s.end}` : ""}</span>
+                <div key={j} style={{ fontSize: 12 }}>
+                  <div className="flex items-center gap-2">
+                    <span style={{ background: goalColor(goals, s.goal.id), color: "#1A0D08", borderRadius: 4, padding: "1px 6px", fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                      {s.goal.nom}
+                    </span>
+                    <span>{s.type} · {s.estKm}km{s.estDplus ? ` · ${s.estDplus}m D+` : ""}{s.start ? ` · ${s.start}–${s.end}` : ""}</span>
+                  </div>
                   <SessionNote entry={journal[day.date]} onSave={(score, note) => onSaveNote(day.date, score, note)} />
                 </div>
               ))}
