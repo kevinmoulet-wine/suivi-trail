@@ -412,7 +412,7 @@ export default function TrailTracker() {
           <>
             <LastActivityCard activities={activities} onViewAll={() => setView("history")} />
             <CourseOverviewList goals={goals} scores={scores} onSelect={id => { setView(id); setCourseTab("suivi"); }} />
-            <MonthCalendar goals={goals} />
+            <MonthCalendar goals={goals} activities={activities} />
             <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} journal={journal}
               onSaveNote={(date, score, note) => persistJournal({ ...journal, [date]: { score, note } })} />
           </>
@@ -832,7 +832,7 @@ function ActivityHistoryList({ activities }) {
 }
 
 // ---------- Calendrier mensuel — vue macro des courses à venir ----------
-function MonthCalendar({ goals }) {
+function MonthCalendar({ goals, activities }) {
   const [monthDate, setMonthDate] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const year = monthDate.getFullYear(), month = monthDate.getMonth();
   const firstOfMonth = new Date(year, month, 1);
@@ -862,6 +862,7 @@ function MonthCalendar({ goals }) {
           const iso = isoDate(d);
           const inMonth = d.getMonth() === month;
           const races = goals.filter(g => g.date === iso);
+          const dayActs = activities.filter(a => a.date === iso);
           return (
             <div key={i} style={{
               minHeight: 46, borderRadius: 6, padding: 3,
@@ -876,6 +877,14 @@ function MonthCalendar({ goals }) {
                   borderRadius: 4, padding: "1px 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 }}>
                   🏁 {g.nom}
+                </div>
+              ))}
+              {dayActs.map((a, j) => (
+                <div key={j} title={`${a.nom || a.type} · ${a.distance_km}km`} style={{
+                  marginTop: 2, fontSize: 9, fontWeight: 700, color: "#0A140E", background: C.pine,
+                  borderRadius: 4, padding: "1px 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  🏃 {a.distance_km}km
                 </div>
               ))}
             </div>
