@@ -309,6 +309,10 @@ export default function TrailTracker() {
   }, []);
 
   async function persistActivities(rows) { setActivities(rows); try { await storage.set("activities", JSON.stringify(rows)); } catch (e) { console.error(e); } }
+  function resetActivities() {
+    if (!window.confirm("Effacer toutes les activités importées ? Tes objectifs, programmes et notes ne sont pas touchés.")) return;
+    persistActivities([]);
+  }
   async function persistGoals(list) { setGoals(list); try { await storage.set("goals", JSON.stringify(list)); } catch (e) { console.error(e); } }
   async function persistJournal(obj) { setJournal(obj); try { await storage.set("journal", JSON.stringify(obj)); } catch (e) { console.error(e); } }
   async function persistProfile(obj) { setProfile(obj); try { await storage.set("profile", JSON.stringify(obj)); } catch (e) { console.error(e); } }
@@ -364,7 +368,11 @@ export default function TrailTracker() {
   const importSection = (
     <Card style={{ marginBottom: 20 }}>
       <SectionLabel icon={Upload}>Importer des données</SectionLabel>
-      <div className="flex gap-2 mb-3">
+      <p style={{ color: C.muted, fontSize: 11, marginBottom: 10 }}>
+        L'import ajoute les nouvelles activités à celles déjà présentes (il ne les remplace pas). Pour repartir de zéro,
+        efface d'abord les activités importées ci-dessous.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button onClick={() => setImportMode("file")} style={btnStyle(importMode === "file")}>Fichier</button>
         <button onClick={() => setImportMode("paste")} style={btnStyle(importMode === "paste")}>Coller le CSV</button>
       </div>
@@ -381,7 +389,15 @@ export default function TrailTracker() {
         </div>
       )}
       {error && <p style={{ color: C.brick, fontSize: 12, marginTop: 8 }}>{error}</p>}
-      {activities.length > 0 && <p style={{ color: C.pine, fontSize: 12, marginTop: 10 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>}
+      {activities.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, flexWrap: "wrap", gap: 8 }}>
+          <p style={{ color: C.pine, fontSize: 12 }}>{activities.length} activités · dernière le {fmtDateFR(activities[activities.length - 1]?.date)}</p>
+          <button onClick={resetActivities}
+            style={{ background: "none", border: `1px solid ${C.border}`, color: C.brick, borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+            <Trash2 size={12} /> Effacer les activités importées
+          </button>
+        </div>
+      )}
     </Card>
   );
 
