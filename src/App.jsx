@@ -8,7 +8,7 @@ import {
 import {
   Upload, Mountain, Flag, Plus, Trash2, X, ChevronDown, ChevronUp,
   TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen, Home as HomeIcon,
-  Database, User, Check, History
+  Database, User, Check, History, Map as MapIcon
 } from "lucide-react";
 
 // ---------- Design tokens (placeholder — design pass later) ----------
@@ -35,6 +35,11 @@ function addDays(d, n) { const dt = new Date(d); dt.setDate(dt.getDate() + n); r
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 function startOfWeekMonday(d) { const dt = new Date(d); const day = (dt.getDay() + 6) % 7; dt.setDate(dt.getDate() - day); dt.setHours(0, 0, 0, 0); return dt; }
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function parseTrace(str) {
+  if (!str) return null;
+  const pts = str.split(";").map(pair => pair.split(",").map(Number)).filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+  return pts.length > 1 ? pts : null;
+}
 function timeToDecimal(t) {
   if (!t) return 0;
   const [h, m] = t.split(":").map(Number);
@@ -327,6 +332,7 @@ export default function TrailTracker() {
       temperature: parseFloat(r.temperature_moy_C) || null,
       teAerobie: parseFloat(r.training_effect_aerobie) || null,
       teAnaerobie: parseFloat(r.training_effect_anaerobie) || null,
+      trace: parseTrace(r.trace_gps),
     })).sort((a, b) => new Date(a.date) - new Date(b.date));
     const byDate = new Map(activities.map(a => [a.date + a.nom, a]));
     clean.forEach(c => byDate.set(c.date + c.nom, c));
@@ -732,6 +738,39 @@ function ActivityStatsGrid({ a, detailed = false }) {
     </div>
   );
 }
+// Trace le parcours en SVG (pas de fond de carte géographique — cf. limite connue) : projection
+// simple lat/lon avec correction du ratio longitude/latitude (cos de la latitude moyenne).
+function RouteMap({ trace, height = 150 }) {
+  if (!trace || trace.length < 2) return null;
+  const lats = trace.map(p => p[0]), lons = trace.map(p => p[1]);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const lonScale = Math.cos((minLat + maxLat) / 2 * Math.PI / 180) || 1;
+  const w = 320, pad = 14;
+  const spanLat = Math.max(maxLat - minLat, 1e-6);
+  const spanLon = Math.max((maxLon - minLon) * lonScale, 1e-6);
+  const scale = Math.min((w - pad * 2) / spanLon, (height - pad * 2) / spanLat);
+  const offX = (w - pad * 2 - spanLon * scale) / 2;
+  const offY = (height - pad * 2 - spanLat * scale) / 2;
+  function project([lat, lon]) {
+    return [pad + offX + (lon - minLon) * lonScale * scale, pad + offY + (maxLat - lat) * scale];
+  }
+  const d = trace.map((p, i) => { const [x, y] = project(p); return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
+  const [startX, startY] = project(trace[0]);
+  const [endX, endY] = project(trace[trace.length - 1]);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        <MapIcon size={11} /> Tracé
+      </div>
+      <svg viewBox={`0 0 ${w} ${height}`} width="100%" height={height} style={{ display: "block", background: C.surfaceHi, borderRadius: 8 }}>
+        <path d={d} fill="none" stroke={C.blaze} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={startX} cy={startY} r="4" fill={C.pine} />
+        <circle cx={endX} cy={endY} r="4" fill={C.gold} />
+      </svg>
+    </div>
+  );
+}
 function LastActivityCard({ activities, onViewAll }) {
   if (!activities.length) return null;
   const last = activities[activities.length - 1];
@@ -745,6 +784,7 @@ function LastActivityCard({ activities, onViewAll }) {
       </div>
       <div style={{ fontWeight: 700, fontSize: 15 }}>{last.nom || last.type}</div>
       <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{fmtDateFR(last.date)}</div>
+      <RouteMap trace={last.trace} />
       <ActivityStatsGrid a={last} />
     </Card>
   );
@@ -780,6 +820,7 @@ function ActivityHistoryList({ activities }) {
             </div>
             {open && (
               <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 10, paddingTop: 10 }}>
+                <RouteMap trace={a.trace} />
                 <ActivityStatsGrid a={a} detailed />
               </div>
             )}
