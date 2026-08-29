@@ -8,7 +8,7 @@ import {
 import {
   Upload, Mountain, Flag, Plus, Trash2, X, ChevronDown, ChevronUp,
   TrendingUp, Activity, Gauge, CalendarDays, Settings2, Target, BookOpen, Home as HomeIcon,
-  Database, User, Check
+  Database, User, Check, History, Map as MapIcon
 } from "lucide-react";
 
 // ---------- Design tokens (placeholder — design pass later) ----------
@@ -35,6 +35,11 @@ function addDays(d, n) { const dt = new Date(d); dt.setDate(dt.getDate() + n); r
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 function startOfWeekMonday(d) { const dt = new Date(d); const day = (dt.getDay() + 6) % 7; dt.setDate(dt.getDate() - day); dt.setHours(0, 0, 0, 0); return dt; }
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function parseTrace(str) {
+  if (!str) return null;
+  const pts = str.split(";").map(pair => pair.split(",").map(Number)).filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+  return pts.length > 1 ? pts : null;
+}
 function timeToDecimal(t) {
   if (!t) return 0;
   const [h, m] = t.split(":").map(Number);
@@ -261,7 +266,7 @@ function computeGoalScore(goal, plan, activities, today) {
 // ---------- UI atoms ----------
 function Card({ children, style }) { return <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16, ...style }}>{children}</div>; }
 function SectionLabel({ icon: Icon, children }) {
-  return <div className="flex items-center gap-2 mb-3" style={{ color: C.muted }}>
+  return <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, color: C.muted }}>
     {Icon && <Icon size={14} />}
     <span style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: "0.12em", fontWeight: 700 }}>{children}</span>
   </div>;
@@ -312,10 +317,22 @@ export default function TrailTracker() {
     const clean = rows.filter(r => r.date).map(r => ({
       date: r.date, nom: r.nom, type: r.type,
       distance_km: parseFloat(r.distance_km) || 0,
+      duree: r.duree || null,
       allure: r.allure_min_par_km, allure_min: paceToMin(r.allure_min_par_km),
       d_plus: parseFloat(r.d_plus_m) || 0,
+      d_moins: parseFloat(r.d_moins_m) || null,
       fc_moy: parseFloat(r.fc_moyenne) || null,
+      fc_max: parseFloat(r.fc_max) || null,
+      vitesse_moy: parseFloat(r.vitesse_moy_kmh) || null,
+      vitesse_max: parseFloat(r.vitesse_max_kmh) || null,
+      calories: parseFloat(r.calories) || null,
       vo2max: parseFloat(r.vo2max_estime) || null,
+      cadence: parseFloat(r.cadence_moyenne) || null,
+      puissance: parseFloat(r.puissance_moyenne_w) || null,
+      temperature: parseFloat(r.temperature_moy_C) || null,
+      teAerobie: parseFloat(r.training_effect_aerobie) || null,
+      teAnaerobie: parseFloat(r.training_effect_anaerobie) || null,
+      trace: parseTrace(r.trace_gps),
     })).sort((a, b) => new Date(a.date) - new Date(b.date));
     const byDate = new Map(activities.map(a => [a.date + a.nom, a]));
     clean.forEach(c => byDate.set(c.date + c.nom, c));
@@ -368,7 +385,7 @@ export default function TrailTracker() {
     </Card>
   );
 
-  const currentGoal = ["home", "add", "data"].includes(view) ? null : goals.find(g => g.id === view);
+  const currentGoal = ["home", "add", "data", "history"].includes(view) ? null : goals.find(g => g.id === view);
 
   return (
     <div style={{ background: C.bg, color: C.text, minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
@@ -379,6 +396,7 @@ export default function TrailTracker() {
         <h1 style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>Objectifs & préparation</h1>
         <div className="flex gap-2" style={{ marginTop: 14, flexWrap: "wrap" }}>
           <button onClick={() => setView("home")} style={btnStyle(view === "home")} className="flex items-center gap-1"><HomeIcon size={13} /> Home</button>
+          <button onClick={() => setView("history")} style={btnStyle(view === "history")} className="flex items-center gap-1"><History size={13} /> Historique</button>
           <button onClick={() => setView("data")} style={btnStyle(view === "data")} className="flex items-center gap-1"><Database size={13} /> Mes données</button>
           {goals.map(g => (
             <button key={g.id} onClick={() => { setView(g.id); setCourseTab("suivi"); }} style={btnStyle(view === g.id)} className="flex items-center gap-1">
@@ -392,10 +410,18 @@ export default function TrailTracker() {
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px" }}>
         {view === "home" && (
           <>
+            <LastActivityCard activities={activities} onViewAll={() => setView("history")} />
             <CourseOverviewList goals={goals} scores={scores} onSelect={id => { setView(id); setCourseTab("suivi"); }} />
             <MonthCalendar goals={goals} />
             <WeekCalendar goals={goals} plans={plans} todayIso={todayIso} journal={journal}
               onSaveNote={(date, score, note) => persistJournal({ ...journal, [date]: { score, note } })} />
+          </>
+        )}
+
+        {view === "history" && (
+          <>
+            <SectionLabel icon={History}>Historique des sorties</SectionLabel>
+            <ActivityHistoryList activities={activities} />
           </>
         )}
 
@@ -674,6 +700,134 @@ function CourseOverviewList({ goals, scores, onSelect }) {
         })}
       </div>
     </>
+  );
+}
+
+// ---------- Historique des sorties — carte "dernière sortie" + liste complète (façon Garmin Connect) ----------
+function StatTile({ label, value, unit }) {
+  if (value === null || value === undefined || value === "") return null;
+  return (
+    <div>
+      <div style={{ ...mono, fontSize: 17, fontWeight: 800, color: C.text }}>
+        {value}{unit && <span style={{ fontSize: 11, color: C.muted, fontWeight: 600 }}> {unit}</span>}
+      </div>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</div>
+    </div>
+  );
+}
+function ActivityStatsGrid({ a, detailed = false }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <StatTile label="Distance" value={a.distance_km} unit="km" />
+      <StatTile label="FC moyenne" value={a.fc_moy} unit="bpm" />
+      <StatTile label="Allure moyenne" value={a.allure} unit="/km" />
+      <StatTile label="Durée" value={a.duree} />
+      <StatTile label="D+" value={a.d_plus ? Math.round(a.d_plus) : null} unit="m" />
+      <StatTile label="Calories" value={a.calories} unit="kcal" />
+      {detailed && <>
+        <StatTile label="D-" value={a.d_moins ? Math.round(a.d_moins) : null} unit="m" />
+        <StatTile label="FC max" value={a.fc_max} unit="bpm" />
+        <StatTile label="Vitesse max" value={a.vitesse_max} unit="km/h" />
+        <StatTile label="VO2max estimée" value={a.vo2max} />
+        <StatTile label="Cadence" value={a.cadence} unit="ppm" />
+        <StatTile label="Puissance" value={a.puissance} unit="W" />
+        <StatTile label="Température" value={a.temperature} unit="°C" />
+        <StatTile label="Effet aérobie" value={a.teAerobie} />
+        <StatTile label="Effet anaérobie" value={a.teAnaerobie} />
+      </>}
+    </div>
+  );
+}
+// Trace le parcours en SVG (pas de fond de carte géographique — cf. limite connue) : projection
+// simple lat/lon avec correction du ratio longitude/latitude (cos de la latitude moyenne).
+function RouteMap({ trace, height = 150 }) {
+  if (!trace || trace.length < 2) return null;
+  const lats = trace.map(p => p[0]), lons = trace.map(p => p[1]);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const lonScale = Math.cos((minLat + maxLat) / 2 * Math.PI / 180) || 1;
+  const w = 320, pad = 14;
+  const spanLat = Math.max(maxLat - minLat, 1e-6);
+  const spanLon = Math.max((maxLon - minLon) * lonScale, 1e-6);
+  const scale = Math.min((w - pad * 2) / spanLon, (height - pad * 2) / spanLat);
+  const offX = (w - pad * 2 - spanLon * scale) / 2;
+  const offY = (height - pad * 2 - spanLat * scale) / 2;
+  function project([lat, lon]) {
+    return [pad + offX + (lon - minLon) * lonScale * scale, pad + offY + (maxLat - lat) * scale];
+  }
+  const d = trace.map((p, i) => { const [x, y] = project(p); return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
+  const [startX, startY] = project(trace[0]);
+  const [endX, endY] = project(trace[trace.length - 1]);
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: C.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        <MapIcon size={11} /> Tracé
+      </div>
+      <svg viewBox={`0 0 ${w} ${height}`} width="100%" height={height} style={{ display: "block", background: C.surfaceHi, borderRadius: 8 }}>
+        <path d={d} fill="none" stroke={C.blaze} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={startX} cy={startY} r="4" fill={C.pine} />
+        <circle cx={endX} cy={endY} r="4" fill={C.gold} />
+      </svg>
+    </div>
+  );
+}
+function LastActivityCard({ activities, onViewAll }) {
+  if (!activities.length) return null;
+  const last = activities[activities.length - 1];
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <SectionLabel icon={History}>Dernière sortie</SectionLabel>
+        <button onClick={onViewAll} style={{ background: "none", border: "none", color: C.blaze, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+          Tout l'historique →
+        </button>
+      </div>
+      <div style={{ fontWeight: 700, fontSize: 15 }}>{last.nom || last.type}</div>
+      <div style={{ color: C.muted, fontSize: 12, marginBottom: 12 }}>{fmtDateFR(last.date)}</div>
+      <RouteMap trace={last.trace} />
+      <ActivityStatsGrid a={last} />
+    </Card>
+  );
+}
+function ActivityHistoryList({ activities }) {
+  const [openIdx, setOpenIdx] = useState(null);
+  const sorted = useMemo(() => [...activities].sort((a, b) => new Date(b.date) - new Date(a.date)), [activities]);
+  if (!sorted.length) {
+    return <Card><p style={{ color: C.muted, fontSize: 13 }}>Aucune activité importée pour l'instant — va dans "Mes données" pour importer ton CSV Garmin.</p></Card>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {sorted.map((a, i) => {
+        const open = openIdx === i;
+        return (
+          <Card key={i}>
+            <button onClick={() => setOpenIdx(open ? null : i)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, font: "inherit", textAlign: "left" }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>{a.nom || a.type}</div>
+                <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{fmtDateFR(a.date)} · {a.type}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ ...mono, fontSize: 14, color: C.pine, fontWeight: 700 }}>{a.distance_km}km</span>
+                {open ? <ChevronUp size={16} color={C.muted} /> : <ChevronDown size={16} color={C.muted} />}
+              </div>
+            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8, fontSize: 12, color: C.muted, flexWrap: "wrap" }}>
+              {a.duree && <span>{a.duree}</span>}
+              {a.allure && <span>{a.allure} /km</span>}
+              {a.fc_moy && <span>{a.fc_moy} bpm</span>}
+              {a.d_plus ? <span>{Math.round(a.d_plus)}m D+</span> : null}
+            </div>
+            {open && (
+              <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 10, paddingTop: 10 }}>
+                <RouteMap trace={a.trace} />
+                <ActivityStatsGrid a={a} detailed />
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
   );
 }
 

@@ -31,6 +31,7 @@ except ImportError:
 LIMIT = 200  # nombre d'activités récentes à récupérer
 ACTIVITY_TYPE_FILTER = None  # ex: "running" pour ne garder que la course à pied, None = tout
 OUTPUT_FILE = "garmin_export.csv"
+TRACK_MAX_POINTS = 80  # nombre de points GPS conservés par activité (simplifié pour rester léger dans le CSV)
 
 
 def m_to_km(m):
@@ -56,6 +57,29 @@ def sec_to_hms(duration_s):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def get_track(client, activity_id, max_points=TRACK_MAX_POINTS):
+    """Récupère le tracé GPS d'une activité, simplifié à max_points points,
+    encodé en une seule cellule CSV : "lat,lon;lat,lon;...".
+    Retourne None si l'activité n'a pas de GPS (ex: tapis de course)."""
+    try:
+        details = client.get_activity_details(activity_id)
+    except Exception:
+        return None
+    points = [
+        (p.get("lat"), p.get("lon"))
+        for p in (details.get("geoPolylineDTO") or {}).get("polyline") or []
+        if p.get("lat") is not None and p.get("lon") is not None
+    ]
+    if not points:
+        return None
+    if len(points) > max_points:
+        step = len(points) / max_points
+        sampled = [points[int(i * step)] for i in range(max_points - 1)]
+        sampled.append(points[-1])
+        points = sampled
+    return ";".join(f"{lat:.5f},{lon:.5f}" for lat, lon in points)
+
+
 def main():
     email = input("Email Garmin Connect : ").strip()
     password = getpass.getpass("Mot de passe Garmin Connect : ")
@@ -71,13 +95,14 @@ def main():
     activities = client.get_activities(0, LIMIT)
 
     rows = []
-    for act in activities:
+    for i, act in enumerate(activities):
         act_type = act.get("activityType", {}).get("typeKey", "")
         if ACTIVITY_TYPE_FILTER and ACTIVITY_TYPE_FILTER not in act_type:
             continue
 
         distance_m = act.get("distance")
         duration_s = act.get("duration")
+        print(f"  [{i + 1}/{len(activities)}] {act.get('activityName', '')}...")
 
         rows.append({
             "date": act.get("startTimeLocal", "")[:10],
@@ -99,6 +124,7 @@ def main():
             "temperature_moy_C": act.get("minTemperature"),
             "training_effect_aerobie": act.get("aerobicTrainingEffect"),
             "training_effect_anaerobie": act.get("anaerobicTrainingEffect"),
+            "trace_gps": get_track(client, act.get("activityId")) or "",
         })
 
     if not rows:

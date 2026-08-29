@@ -21,7 +21,10 @@ L'utilisateur exporte ses activités Garmin Connect via le script `scripts/expor
 `date, nom, type, distance_km, duree, allure_min_par_km, d_plus_m, d_moins_m,
 fc_moyenne, fc_max, vitesse_moy_kmh, vitesse_max_kmh, calories, vo2max_estime,
 cadence_moyenne, puissance_moyenne_w, temperature_moy_C,
-training_effect_aerobie, training_effect_anaerobie`.
+training_effect_aerobie, training_effect_anaerobie, trace_gps`.
+
+`trace_gps` est le tracé GPS simplifié (jusqu'à `TRACK_MAX_POINTS` points), encodé en une
+cellule `"lat,lon;lat,lon;..."` — vide si l'activité n'a pas de GPS (ex: tapis de course).
 
 Ce CSV est importé dans l'app (upload de fichier ou copier-coller) et parsé côté client.
 
